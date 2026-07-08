@@ -41,23 +41,41 @@ system's only memory — anything not telegraphed does not exist.
 ## Workflow
 
 ```
-1. DECOMPOSE   task → questions (parallel) + build units (serial)
+1. DECOMPOSE   task → questions (parallel) + build units (serial).
+               S-task → ONE unit; don't manufacture decomposition
 2. RECON?      terrain unfamiliar → 1 open recon dispatch. familiar → skip
 3. EXPLORE     fan out ALL independent questions in one turn.
                pull project facts from CONVENTIONS.md into dispatch CONTEXT
-4. SPEC        write builder dispatch: TASK/SCOPE/CONTEXT/DONE-WHEN/ESCALATE-IF
-5. BUILD       drive each unit through RYGB (references/rygb-cycle.md):
-               Red (builder) → Yellow (explorer) → Green (builder) →
-               Blue (explorer). You judge Yellow/Blue findings; queue
-               new-cycle work, never interleave.
-6. ON ESCALATE dispatch explorer to diagnose → redirect builder (DIAG/FIX)
+4. DESIGN      draft the full design: per unit, the test list (assert-level),
+               API surface, SCOPE, DONE-WHEN. then ONE explorer red-teams it
+               (mode: design) — missing API surface? mandated code no test
+               forces? wrong assumptions vs recon FACTS? fix before building
+5. BUILD       per unit, ONE fresh builder dispatch = the full guarded cycle
+               (references/rygb-cycle.md): tests first → right-reason failure
+               quoted → minimal impl → green → self-prune. context pack in
+               CONTEXT (see below). builder serial, one unit in flight
+6. AUDIT ∥     unit N green → dispatch its audit explorer (mode: blue,
+               includes DONE-WHEN re-run) IN THE SAME TURN as unit N+1's
+               builder. you judge findings: pure cleanup → fold into the
+               next unit's dispatch (or one final FIX dispatch); new
+               behavior/bug → queue as its own unit
+7. ON ESCALATE dispatch explorer to diagnose → re-issue the unit to a fresh
+               builder with the failure VERBATIM + DIAG/FIX in CONTEXT.
                never diagnose by reading code yourself
-7. VERIFY      final explorer run: DONE-WHEN checks, report VERBATIM
-8. CLOSE       one TGS summary to user: STATUS/FACTS/RISKS/UNKNOWN
+8. CLOSE       final audit doubles as VERIFY (full suite VERBATIM), then one
+               TGS summary to user: STATUS/FACTS/RISKS/UNKNOWN
 ```
 
 Step 2 heuristic: skip recon iff the log or the user already establishes the
 terrain. When in doubt, recon — one Haiku run buys peripheral vision.
+
+**Context packs.** A fresh builder knows nothing. Its dispatch CONTEXT must
+carry every established fact the unit needs — forwarded telegraph FACTS
+(file:line anchors, API signatures, house patterns, prior units' changes),
+not instructions to "go read". ~1–3k tokens of pack per dispatch replaces a
+warm transcript that re-bills its whole history on every resume. Forward
+facts verbatim from the log; never re-derive, never make the builder
+re-explore.
 
 ## Dispatching subagents
 
@@ -69,14 +87,48 @@ fields as the prompt.
   from its tool fence; Bash is granted so it can run tests/builds, so
   read-only-through-Bash is enforced by its prompt discipline, not the
   platform. Never put a write instruction in an explorer dispatch. State the
-  mode in the dispatch: `recon` | `narrow` | `yellow` | `blue`.
+  mode in the dispatch: `recon` | `narrow` | `design` | `blue`.
 - Builder: `subagent_type: byproxy-builder` (Sonnet, write tools). One at a
   time, serial.
 - Explorers parallel → send them as multiple Agent calls in ONE turn.
 - Send nothing outside TGS fields.
 
 Install note: these agents live in `.claude/agents/`. A project that only
-symlinks the skill won't get them — see the README install step.
+symlinks the skill won't get them — see the README install step. Agent
+definitions load at session start: if `byproxy-*` types are missing from
+the registry, fall back to generic agents with the role instructions
+inlined in the dispatch — it works, but measured ~2.5× more expensive per
+dispatch. Prefer a session restart.
+
+## Dispatch economics (measured, benchmarks 1–2)
+
+- **Never resume a builder across units — the transcript tax dominates.**
+  Benchmark 2: one builder resumed over 9 dispatches cost 33k → 120k per
+  dispatch as its transcript grew — 659k sonnet total, more than the whole
+  task was worth. A fresh builder + a 1–3k context pack per unit is an
+  order of magnitude cheaper than a warm transcript at L scale. Resume a
+  builder ONLY within a unit for a single bounded redirect; anything more →
+  fresh builder, failure quoted in CONTEXT.
+- **One dispatch = one full unit cycle, not one phase.** Phase-per-dispatch
+  tripled builder turns for zero measured correctness gain over an
+  internally-disciplined cycle (right-reason quote mandatory) plus an
+  independent async audit.
+- **Red-team the design before building.** Both expensive reworks in
+  benchmark 2 were orchestrator authoring errors (missing API surface,
+  mandated-but-untested branches). One design-mode explorer pass (~2k
+  opus-equivalent) is the cheapest correctness money in the system.
+- **Bound every explorer.** Cheap per token still compounds: give narrow
+  SCOPE and an explicit budget in the dispatch (`≤8 tool calls`, `scoped
+  test only, not full suite`) or a Haiku audit will happily run the world.
+- **Audit ∥ build.** Unit N's audit (read-only) runs in the same turn as
+  unit N+1's builder. The final audit doubles as VERIFY (full suite,
+  VERBATIM). Attacks wall time, which pricing can't fix.
+- **Verify bounds, don't trust them.** Builders self-waive prompt-level
+  limits (observed once). Require `git diff --stat` VERBATIM in every
+  builder report and check the numbers against ESCALATE-IF yourself.
+- **Price in dollars, not tokens.** Haiku ≈ 1/15, Sonnet ≈ 1/5 of
+  Opus-class list price. Raw token counts across tiers are not comparable;
+  never judge a run by summing them.
 
 ## Failure handling
 

@@ -38,14 +38,13 @@ Full spec: [`references/tgs-spec.md`](.claude/skills/byproxy/references/tgs-spec
 
 ## The builder's discipline: RYGB
 
-The builder doesn't write code freehand. It runs the **Red → Yellow → Green → Blue** TDD cycle, one full cycle per logical unit:
+The builder doesn't write code freehand — but byproxy doesn't pay a dispatch per TDD phase either (benchmarked: that triples builder turns for no correctness gain). The guarded cycle, v2:
 
-- 🔴 **Red** — write the failing test; confirm it fails for the right reason.
-- 🟡 **Yellow** — an explorer critiques the test (trivial-pass? missing edge cases? wrong failure?). The orchestrator judges the findings and redirects.
-- 🟢 **Green** — minimal implementation to pass; nothing more.
-- 🔵 **Blue** — an explorer audits coverage and correctness. The orchestrator classifies each finding as pure cleanup (redirect the builder) or a new cycle (queue it in the telegraph log). Never interleave.
+- **Design red-team** (once per task) — the orchestrator fixes each unit's test list and API surface; a read-only explorer attacks the design *before* anything builds: write-only features, mandated-but-untested code, trivially-passing tests.
+- **One dispatch = one unit's full cycle** — a fresh builder writes the tests, quotes the failure verbatim to prove it fails for the *right reason*, implements minimally, prunes, and reports with its diff stat.
+- **Audit, pipelined** — a read-only explorer audits each landed unit (running in parallel with the next unit's builder); the final audit re-runs the full suite as verification.
 
-Yellow and Blue are read-only *findings*; the verdict is always the orchestrator's. That is byproxy's core rule applied to TDD: the cheapest model reports, the expensive model decides. The orchestrator drives the loop and manages the queue of surfaced work — full spec in [`references/rygb-cycle.md`](.claude/skills/byproxy/references/rygb-cycle.md).
+Explorers report *findings*, never verdicts; the orchestrator judges everything and queues surfaced work in the telegraph log. That is byproxy's core rule applied to TDD: the cheapest model reports, the expensive model decides. Full spec in [`references/rygb-cycle.md`](.claude/skills/byproxy/references/rygb-cycle.md).
 
 ## What's in this repo
 
@@ -82,9 +81,14 @@ ln -s "$(pwd)/byproxy/.claude/agents/byproxy-builder.md"  ~/.claude/agents/bypro
 
 Then in any project, invoke `/byproxy` (or just describe a multi-agent coding task) and hand it the work.
 
-## Status: unbenchmarked
+## Status: three benchmarks in, measured headlessly
 
-No transcript with a token bill exists yet. The claim that this beats "just let the expensive model read the files" is a design bet stated honestly, not a measured result. The next artifact this repo needs is a real orchestration log with costs, next to a single-agent baseline on the same task. Until then, treat the economics as a hypothesis you validate on your own workload.
+Full history in [`benchmarks/`](benchmarks/); benchmark 3 is the one to trust — it runs both arms headless via the [harness](benchmarks/harness/) (fresh worktrees, measured `total_cost_usd`, independent scoring, n=3 per arm), eliminating the inline-orchestration biases of benchmarks 1–2.
+
+**Benchmark 3 (L-task, v2 workflow, fable-low orchestrator vs solo opus):**
+6/6 runs fully green. Cost: statistical tie (byproxy mean $4.88 with a $0.15 spread; solo mean $4.40 with a $2.61 spread). Wall time: solo ~1.6× faster. byproxy's real differentiators: **cost predictability** and **self-auditing output** — every byproxy run shipped with a disclosed defect list from its own audit; solo reported unqualified success.
+
+History: bench 1 (S-task, inline) byproxy ~40% cheaper; bench 2 (L-task, inline) byproxy lost ~1.8× — the cost was builder re-entry, which the v2 redesign (context packs, one dispatch per unit, design red-team, pipelined audits) eliminated: the explore+build data plane now costs ~$2.2, and the remaining cost center is the orchestrator's own price tag. Benchmark 4: a sonnet control plane (projected ~$2.6–3.2, under the solo mean) and a task whose DoD discriminates quality.
 
 ## The philosophy in one sentence
 
