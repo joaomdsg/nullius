@@ -1,4 +1,4 @@
-# TGS — Telegraphic-Grok-Schema v0.1
+# TGS — Telegraphic-Grok-Schema v0.2
 
 Inter-agent message protocol. Grok-level density, schema-level reliability.
 Design rule: **compress the channels, never the scratchpads.** TGS governs
@@ -13,9 +13,13 @@ messages between agents only. Reasoning inside each agent stays full-fat.
    between fields.
 2. **Grok inside fields.** Drop articles, copulas, auxiliaries, politeness.
    Noun-first. `mutex parse.go:88` not `there is a mutex in parse.go at line 88`.
-3. **Machine output is quoted, never paraphrased.** Compiler errors, test
-   assertions, stack frames go in `VERBATIM:` raw. Paraphrase = information
-   loss at the cheapest model. Telegraph the prose, quote the machine.
+3. **Machine output is quoted, never paraphrased — and bounded.** Compiler
+   errors, test assertions, stack frames go in `VERBATIM:` raw. Paraphrase =
+   information loss at the cheapest model. Telegraph the prose, quote the
+   machine. Output over ~40 lines: quote the load-bearing slice (failing
+   assertion + top ~5 frames + surrounding context) and mark the elision
+   with a pointer, e.g. `[... 120 lines elided — full log at path:line ...]`.
+   Elide, never paraphrase.
 4. **Absence is reported.** `UNKNOWN:` and `RULED-OUT:` are mandatory where
    defined. Confident silence is the failure mode; visible gaps are cheap.
 5. **One message, one purpose.** Dispatch, report, escalate, redirect —
@@ -37,7 +41,7 @@ Multi-item fields may use one line per item.
 | `SCOPE:` | dispatch | files/dirs/symbols allowed. `only` suffix = hard fence |
 | `CONTEXT:` | dispatch | facts recipient needs, nothing else |
 | `DONE-WHEN:` | dispatch | mechanical exit condition (test green, file exists) |
-| `ESCALATE-IF:` | dispatch (builder) | deterministic triggers, `\|`-separated |
+| `ESCALATE-IF:` | dispatch (builder) | deterministic triggers, `\|`-separated. dispatch sets concrete bounds (diff size, tool calls); an unbounded dispatch is a spec bug |
 | `REPORT:` | dispatch (explorer) | fields expected back |
 | `FACTS:` | report | findings. one per line if >2 |
 | `RISKS:` | report | hazards spotted, even off-question |
