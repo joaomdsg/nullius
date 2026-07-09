@@ -31,8 +31,17 @@ TIMEOUT_S="${TIMEOUT_S:-3600}"
 PROMPT="$(cat "$TASK_DIR/prompt.md")"
 TASK_NAME="$(basename "$TASK_DIR")"
 
-ORCH_MODEL="claude-fable-5"; ORCH_EFFORT="low"
+# Arm variants via env: ORCH_MODEL/ORCH_EFFORT pin the byproxy control
+# plane; SOLO_MODEL pins the solo arm. LABEL names the variant in results
+# (defaults to arm+model so ablations stay distinguishable).
+ORCH_MODEL="${ORCH_MODEL:-claude-fable-5}"
+ORCH_EFFORT="${ORCH_EFFORT:-low}"
 SOLO_MODEL="${SOLO_MODEL:-claude-opus-4-8}"
+if [[ "$ARM" == "byproxy" ]]; then
+  LABEL="${LABEL:-byproxy-${ORCH_MODEL#claude-}-$ORCH_EFFORT}"
+else
+  LABEL="${LABEL:-solo-${SOLO_MODEL#claude-}}"
+fi
 
 RESULTS_DIR="$HARNESS_DIR/results"; mkdir -p "$RESULTS_DIR"
 JSONL="$RESULTS_DIR/results.jsonl"
@@ -77,7 +86,7 @@ $PROMPT"
   fi
 
   echo "[$TASK_NAME/$ARM rep $rep] running headless (timeout ${TIMEOUT_S}s)..." >&2
-  RAW="$RESULTS_DIR/$TASK_NAME-$ARM-$STAMP-rep$rep.json"
+  RAW="$RESULTS_DIR/$TASK_NAME-$LABEL-$STAMP-rep$rep.json"
   T0=$SECONDS
   set +e
   (cd "$WT" && timeout "$TIMEOUT_S" claude "${CLAUDE_ARGS[@]}" "$RUN_PROMPT") > "$RAW" 2>"$RAW.stderr"
@@ -86,16 +95,22 @@ $PROMPT"
   WALL=$((SECONDS - T0))
 
   echo "[$TASK_NAME/$ARM rep $rep] scoring independently..." >&2
-  SCORE="$("$HARNESS_DIR/score.sh" "$WT" "$TASK_DIR/tests.txt")"
-  DIFFSTAT="$(git -C "$WT" diff --stat | tail -1)"
-  UNTRACKED="$(git -C "$WT" ls-files --others --exclude-standard | grep -v '^\.claude/' | wc -l)"
+  # A scoring failure must never lose a paid run: default to an error
+  # marker, keep the diff for post-mortem, and always emit the row.
+  SCORE="$("$HARNESS_DIR/score.sh" "$WT" "$TASK_DIR/tests.txt" 2>"$RAW.score-err")" \
+    || SCORE='{"error":"score.sh failed — see .score-err","complete":false}'
+  jq -e . >/dev/null 2>&1 <<<"$SCORE" \
+    || SCORE='{"error":"score.sh emitted non-JSON — see .score-err","complete":false}'
+  git -C "$WT" diff > "$RAW.diff" 2>/dev/null || true
+  DIFFSTAT="$(git -C "$WT" diff --stat 2>/dev/null | tail -1 || true)"
+  UNTRACKED="$(git -C "$WT" ls-files --others --exclude-standard 2>/dev/null | grep -v '^\.claude/' | grep -c . || true)"
 
   COST="$(jq -r '.total_cost_usd // "null"' "$RAW" 2>/dev/null || echo null)"
   USAGE="$(jq -c '.usage // null' "$RAW" 2>/dev/null || echo null)"
   TURNS="$(jq -r '.num_turns // "null"' "$RAW" 2>/dev/null || echo null)"
 
   jq -n -c \
-    --arg task "$TASK_NAME" --arg arm "$ARM" --arg stamp "$STAMP" \
+    --arg task "$TASK_NAME" --arg arm "$LABEL" --arg stamp "$STAMP" \
     --argjson rep "$rep" --argjson rc "$RC" --argjson wall "$WALL" \
     --argjson cost "$COST" --argjson usage "$USAGE" --argjson turns "$TURNS" \
     --argjson score "$SCORE" \
