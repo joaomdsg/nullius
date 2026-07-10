@@ -105,6 +105,19 @@ as a measurable advantage once the treatment was forced and verified.
    conclusion drawn from a lossy log. Fixed: capture `stream-json`, count
    `explorer_dispatches` per row. All n=5 byproxy reps then showed 9–12.
 
-Reproduce: `SOLO_MODEL=claude-sonnet-5 SOLO_EFFORT=high ./run.sh
-tasks/vialite-todo solo --reps 5` and the `byproxy` arm with
-`ORCH_MODEL=claude-sonnet-5 ORCH_EFFORT=high`.
+Reproduce: `PLAIN_MODEL=claude-sonnet-5 PLAIN_EFFORT=high ./run.sh
+tasks/vialite-todo plain --reps 5` and the `byproxy` arm with
+`ORCH_MODEL=claude-sonnet-5 ORCH_EFFORT=high`. (The `solo` arm is now named
+`plain`; legacy `SOLO_*` env still works.)
+
+## Addendum (2026-07-10) — this writeup's claims are contested
+
+An adversarial methodology review found several of the conclusions above
+under-supported or confounded — most seriously, the "solo" arm here **also
+dispatched up to 10 subagents/rep**, so both the cost and the "solo grinds
+alone" mechanism stories are confounded; the independent audit's *occurrence*
+was never instrumented in these reps; and "direction is consistent across
+tiers" is contradicted by unreported reps in `results.jsonl`. See the
+**Threats to validity** section of `2026-07-10-v4-fable-cost-and-rigor.md`.
+Treat the "clean refutation" framing as provisional pending a preregistered,
+powered rerun.

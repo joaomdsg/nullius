@@ -1,11 +1,15 @@
 # byproxy
 
-Facts by proxy. You build; explorers guard.
+Truth by proxy. Facts from explorers, intent from the user, judgment kept
+where it's paid for.
 
-A guard layer for coding agents in Claude Code: the capable model designs,
-writes the code, and judges — cheap read-only explorers gather every fact,
-execute every check, and audit every diff. The model doing the judging
-never gathers its own evidence; the model gathering evidence never judges.
+A contract-driven guard layer for coding agents in Claude Code: the
+orchestrator reads the hard code itself, escalates understanding gaps to
+the user, and authors falsifiable contracts; cheap read-only explorers
+gather every fact and re-run every check; a tool-less peer red-teams the
+contract before code exists; a Sonnet builder ships the volume; a cold
+peer auditor judges the landed diff. Nothing that matters is assumed —
+every kind of truth is fetched from where it lives.
 
 ## Why this shape
 
@@ -18,38 +22,63 @@ more defects and disclosed no more of them than a plain solo run, while
 running cheaper. The epistemics that *looked* like the durable win in early
 inline runs did not survive controlled measurement.
 
-What honestly remains is narrower than the original pitch, and worth being
-clear about: the guards make a run **cheaper and more legible**, not more
-correct. Recon and audit delegate reading to Haiku (the measured ~41% cost
-cut), and a run that discloses its own gaps is easier to trust than one that
-ships unqualified success — even when the two are equally correct. That is
-the case for the shape below; it is not a case that it finds more bugs.
+What honestly remained after v3 was narrower than the original pitch: the
+guards made a run **cheaper and more legible**, not more correct. Recon
+and audit delegated reading to Haiku (the measured ~41% cost cut), and a
+run that discloses its own gaps is easier to trust than one that ships
+unqualified success — even when the two are equally correct. v4 keeps
+that and goes after what v3 gave up.
 
-byproxy v3 is only the guards:
+byproxy v4 responds to benchmark 5's diagnosis — the guard layer converged
+faster and cheaper but *shallower*, missing the subtle defects that solo
+grinding found — by concentrating each model where its tier earns its
+price, and fetching every kind of truth from where it actually lives:
+tree facts from explorers, intent from the user, judgment from the
+orchestrator alone.
 
-- **Recon** — parallel explorers pull house patterns, existing symbols,
-  and test layout before design. Facts arrive quoted, gaps declared.
-- **Design gate** — the builder compiles its own design into falsifiable
-  checks from a fixed failure taxonomy (write-only API, mandated-untested
-  code, trivially-passing tests, symbol collisions); an explorer executes
-  them mechanically — pass/fail with verbatim evidence — before any code
-  exists. The explorer never critiques; it verifies claims against the tree.
-- **Guarded TDD build** — done directly by the capable model: right-reason
-  failure quoted before implementation, minimal to green, prune.
-- **Independent audit** — a cold explorer re-runs the exit checks and hunts
-  uncovered code per landed unit; the final audit runs the whole suite.
-  Every accepted risk is written down in the close.
+- **Understand** — parallel Haiku explorers map the terrain; the
+  orchestrator then reads the critical-path files verbatim itself (the
+  map decides *where* to read, never substitutes for reading), and
+  escalates every contract-shaping intent gap to the user in one batch.
+  Unescalated assumptions go to a mandatory `ASSUMED` ledger, disclosed
+  at close.
+- **Contract** — the orchestrator authors falsifiable behaviors with
+  acceptance semantics, test obligations, doc scope, and per-unit exit
+  checks — the spec a capable builder executes without hand-holding.
+- **Red-team** — a tool-less same-tier critic attacks the contract on
+  paper: behaviors the task implies that no line forces, lines a lazy
+  implementation satisfies vacuously. It never sees the tree or the
+  orchestrator's reasoning; tree facts it needs come back as questions
+  for cheap explorer checks.
+- **Gate** — the contract compiles into mechanical checks (write-only
+  API, mandated-untested, trivially-passing, collisions, concurrency
+  invariants) that an explorer executes against the tree before code.
+- **Build** — routed by judgment density, not size: concurrency,
+  lifecycle, invariants, and error paths the orchestrator edits directly
+  under guarded TDD; fully-specifiable volume goes to a persistent
+  Sonnet builder that ships tests + implementation + docs against the
+  contract. An explorer re-runs every exit check — self-reported green
+  is never the record.
+- **Cold peer audit** — a same-tier auditor sees the diff, task, and
+  contract, never the reasoning. It judges — including behaviors the
+  task implies that the *contract* missed — and hunts latent defects
+  with probe tests it writes and runs under the race detector, because
+  the measured record shows inspection alone misses the worst ones.
 
-Explorer reports always carry `VERBATIM` (machine output quoted, never
-paraphrased) and a mandatory `UNKNOWN` — the cheapest model in the loop
-never decides what information survives, and confident silence is treated
-as the failure mode.
+Every report still carries `VERBATIM` (machine output quoted, never
+paraphrased) and a mandatory `UNKNOWN` — no agent in the loop decides
+silently what information survives, and confident silence is treated as
+the failure mode. v4's bet is stated in the skill and not yet measured:
+contract + red-team + cold peer audit should recover the fix-rate v3's
+economy gave away, at a cost still below a solo run of the
+orchestrator's own tier. Benchmark 6 exists to refute it.
 
 ## The record
 
 The data that forced this shape. Benchmarks 1–4 were generated at commit
 [`8f7ed5c`](../../tree/8f7ed5ca7fdd4f966138e6e8d92cbb9a0b57ebd1) under the
-earlier orchestrated architecture; benchmark 5 tests the current guard layer.
+earlier orchestrated architecture; benchmark 5 tested the v3 guard layer.
+v4 is unmeasured until benchmark 6 runs.
 Full reports with every bill in [`benchmarks/`](benchmarks/).
 
 | bench | task | result |
@@ -91,8 +120,12 @@ reporting green on a broken test build, and its own scoring bug).
 
 ```
 .claude/
-  skills/byproxy/SKILL.md   # the guard-layer skill (workflow, gate taxonomy, protocol)
-  agents/                   # byproxy-explorer (haiku, read-only tool fence)
+  skills/byproxy/SKILL.md   # the v4 skill (workflow, contract format, gate taxonomy, protocol)
+  agents/
+    byproxy-explorer.md     # haiku · read-only breadth: recon, checks, exit-check re-runs
+    byproxy-critic.md       # same-tier · tool-less contract red-team
+    byproxy-builder.md      # sonnet · contract-executing tests+impl+docs, persistent
+    byproxy-auditor.md      # same-tier · cold peer audit, probe-test armed
 benchmarks/                 # measured reports, every claim with a bill (commit 8f7ed5c)
   harness/                  # the headless grid runner + tasks
 template/CONVENTIONS.md     # questions-not-rules conventions template → recon context
@@ -106,7 +139,7 @@ dispatch and agent-definition model). Install both pieces:
 ```sh
 git clone https://github.com/joaomdsg/byproxy.git
 ln -s "$(pwd)/byproxy/.claude/skills/byproxy" ~/.claude/skills/byproxy
-ln -s "$(pwd)/byproxy/.claude/agents/byproxy-explorer.md" ~/.claude/agents/byproxy-explorer.md
+for a in byproxy/.claude/agents/*.md; do ln -s "$(pwd)/$a" ~/.claude/agents/; done
 ```
 
 Agent definitions load at session start — restart Claude Code after
@@ -115,7 +148,8 @@ own repo and measure before you believe anything, including this README.
 
 ## The philosophy in one sentence
 
-Make the cheap model report instead of judge, make the builder prove its
-failures before its fixes, audit everything with cold eyes, and publish
+Fetch facts from the cheap model, intent from the user, and judgment from
+nowhere; make every builder prove its failures before its fixes; audit
+with cold eyes that run probes instead of trusting their reading; publish
 the bill — because the benchmark that can refute you is worth more than
 the architecture it refuted.

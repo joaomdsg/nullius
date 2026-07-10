@@ -32,16 +32,18 @@ PROMPT="$(cat "$TASK_DIR/prompt.md")"
 TASK_NAME="$(basename "$TASK_DIR")"
 
 # Arm variants via env: ORCH_MODEL/ORCH_EFFORT pin the byproxy control
-# plane; SOLO_MODEL pins the solo arm. LABEL names the variant in results
-# (defaults to arm+model so ablations stay distinguishable).
+# plane; PLAIN_MODEL/PLAIN_EFFORT pin the plain arm (plain claude, no guard
+# layer). LABEL names the variant in results (defaults to arm+model so
+# ablations stay distinguishable). The legacy SOLO_MODEL/SOLO_EFFORT names
+# are still honored so older reproduce commands keep working.
 ORCH_MODEL="${ORCH_MODEL:-claude-fable-5}"
 ORCH_EFFORT="${ORCH_EFFORT:-low}"
-SOLO_MODEL="${SOLO_MODEL:-claude-opus-4-8}"
-SOLO_EFFORT="${SOLO_EFFORT:-}"   # empty = harness default effort for the model
+PLAIN_MODEL="${PLAIN_MODEL:-${SOLO_MODEL:-claude-opus-4-8}}"
+PLAIN_EFFORT="${PLAIN_EFFORT:-${SOLO_EFFORT:-}}"   # empty = harness default effort
 if [[ "$ARM" == "byproxy" ]]; then
   LABEL="${LABEL:-byproxy-${ORCH_MODEL#claude-}-$ORCH_EFFORT}"
 else
-  LABEL="${LABEL:-solo-${SOLO_MODEL#claude-}${SOLO_EFFORT:+-$SOLO_EFFORT}}"
+  LABEL="${LABEL:-plain-${PLAIN_MODEL#claude-}${PLAIN_EFFORT:+-$PLAIN_EFFORT}}"
 fi
 
 RESULTS_DIR="$HARNESS_DIR/results"; mkdir -p "$RESULTS_DIR"
@@ -85,8 +87,13 @@ for rep in $(seq 1 "$REPS"); do
   # captured — the plain json summary omits subagent tool calls, making the
   # byproxy treatment (explorer dispatch) unobservable. We parse the final
   # result event for the summary and count Agent/Task dispatches from the stream.
+  # Both arms get the same allowlist, including native subagent dispatch
+  # (Agent/Task). "plain" does NOT mean "no subagents" — it means plain
+  # Claude Code with no byproxy skills/agents and no global config: the arms
+  # differ only by the guard layer (project .claude/skills + agents + the
+  # forced methodology prompt), not by tool access.
   CLAUDE_ARGS=(-p --output-format stream-json --verbose --permission-mode auto
-    --allowedTools "Read Edit Write Grep Glob Agent Task
+    --allowedTools "Read Edit Write Grep Glob Agent Task SendMessage
       Bash(go build*) Bash(go test*) Bash(go vet*) Bash(gofmt*)
       Bash(git diff*) Bash(git status*) Bash(git log*) Bash(git show*)
       Bash(ls*) Bash(cat*) Bash(grep*) Bash(rg*) Bash(find*) Bash(wc*)")
@@ -102,18 +109,18 @@ for rep in $(seq 1 "$REPS"); do
     # skill body (minus YAML frontmatter) as an appended system prompt so the
     # guard workflow governs the whole run whether or not the Skill tool fires.
     SKILL_BODY="$(awk 'f{print} /^---[[:space:]]*$/{c++; if(c==2) f=1}' "$BYPROXY_ROOT/.claude/skills/byproxy/SKILL.md")"
-    CLAUDE_ARGS+=(--append-system-prompt "You are operating under the byproxy guard-layer methodology. This is not optional and overrides any instinct to complete the task solo. You MUST run its workflow — recon, the compiled design gate, and an INDEPENDENT byproxy-explorer audit of every change you land (dispatch real byproxy-explorer subagents via the Agent tool; you never audit your own diff). Do not end your turn until the final audit has run and you have reported STATUS/FACTS/RISKS/UNKNOWN. The methodology:
+    CLAUDE_ARGS+=(--append-system-prompt "You are operating under the byproxy v4 methodology. This is not optional and overrides any instinct to complete the task solo. You MUST run its full workflow with real subagent dispatches via the Agent tool: byproxy-explorer recon + surgical read, a byproxy-critic red-team of your contract, the compiled gate, the build (byproxy-builder for delegable volume; explorer reruns of every exit check), and a cold byproxy-auditor pass with an explorer fact-pack — you never audit your own diff. This is a headless run with NO USER available: at ESCALATE, use the self-answer fallback (author the question batch, answer each with your best-judgment recommendation, record all in ASSUMED as self-answered). Never call AskUserQuestion. Do not end your turn until the audit has run and you have reported STATUS/FACTS/RISKS/UNKNOWN/ASSUMED. The methodology:
 
 $SKILL_BODY")
-    RUN_PROMPT="Complete this task under the byproxy guard-layer methodology in your system prompt: recon the inherited code with byproxy-explorer subagents, gate your design, build, and have explorers independently audit every diff before you finish.
+    RUN_PROMPT="Complete this task under the byproxy v4 methodology in your system prompt: explorer recon, surgical read, contract, critic red-team, gate, guarded build, cold auditor pass — before you finish.
 
 $PROMPT"
-  elif [[ "$ARM" == "solo" ]]; then
-    CLAUDE_ARGS+=(--model "$SOLO_MODEL")
-    [[ -n "$SOLO_EFFORT" ]] && CLAUDE_ARGS+=(--effort "$SOLO_EFFORT")
+  elif [[ "$ARM" == "plain" ]]; then
+    CLAUDE_ARGS+=(--model "$PLAIN_MODEL")
+    [[ -n "$PLAIN_EFFORT" ]] && CLAUDE_ARGS+=(--effort "$PLAIN_EFFORT")
     RUN_PROMPT="$PROMPT"
   else
-    echo "arm must be byproxy|solo" >&2; exit 2
+    echo "arm must be byproxy|plain" >&2; exit 2
   fi
 
   echo "[$TASK_NAME/$ARM rep $rep] running headless (timeout ${TIMEOUT_S}s)..." >&2
@@ -121,7 +128,30 @@ $PROMPT"
   T0=$SECONDS
   set +e
   # stream-json rejects a positional prompt; feed it via stdin instead.
-  (cd "$WT" && printf '%s' "$RUN_PROMPT" | timeout "$TIMEOUT_S" claude "${CLAUDE_ARGS[@]}") > "$RAW" 2>"$RAW.stderr"
+  # CONTAINER=1 runs the claude invocation inside the pinned sandbox image
+  # (see Dockerfile): same CLI + Go toolchain regardless of host, so the only
+  # variable across a campaign is the arm. Auth is passed by reference via
+  # -e ANTHROPIC_API_KEY (never inlined). The container runs as the invoking
+  # uid:gid with a writable $HOME bind-mount, so files it writes into the
+  # worktree stay host-owned and scoring/cleanup work unchanged. Default
+  # bridge networking = outbound-only; the container is otherwise isolated.
+  if [[ "${CONTAINER:-0}" == "1" ]]; then
+    if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+      echo "CONTAINER=1 requires ANTHROPIC_API_KEY in the environment" >&2
+      exit 3
+    fi
+    CHOME="$WTPARENT/chome"; mkdir -p "$CHOME"
+    printf '%s' "$RUN_PROMPT" | timeout "$TIMEOUT_S" docker run --rm -i \
+      --user "$(id -u):$(id -g)" \
+      -e ANTHROPIC_API_KEY -e HOME=/home/agent \
+      -e GOCACHE=/home/agent/.cache/go-build -e GOPATH=/home/agent/go \
+      -v "$WT:/work" -w /work \
+      -v "$CHOME:/home/agent" \
+      byproxy-bench:latest claude "${CLAUDE_ARGS[@]}" \
+      > "$RAW" 2>"$RAW.stderr"
+  else
+    (cd "$WT" && printf '%s' "$RUN_PROMPT" | timeout "$TIMEOUT_S" claude "${CLAUDE_ARGS[@]}") > "$RAW" 2>"$RAW.stderr"
+  fi
   RC=$?
   set -e
   WALL=$((SECONDS - T0))
@@ -137,6 +167,9 @@ $PROMPT"
   DISPATCHES="$(jq -rc 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use" and (.name=="Task" or .name=="Agent")) | (.input.subagent_type // "unknown")' "$RAW" 2>/dev/null)"
   DISPATCH_N="$(printf '%s' "$DISPATCHES" | grep -c . || true)"
   EXPLORER_N="$(printf '%s\n' "$DISPATCHES" | grep -c 'byproxy-explorer' || true)"
+  CRITIC_N="$(printf '%s\n' "$DISPATCHES" | grep -c 'byproxy-critic' || true)"
+  BUILDER_N="$(printf '%s\n' "$DISPATCHES" | grep -c 'byproxy-builder' || true)"
+  AUDITOR_N="$(printf '%s\n' "$DISPATCHES" | grep -c 'byproxy-auditor' || true)"
   SKILL_N="$(jq -rc 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use" and .name=="Skill") | .input.skill // "?"' "$RAW" 2>/dev/null | grep -c 'byproxy' || true)"
   # Extract the run's final message so a report-aware scorer can measure
   # disclosure/recall (never used for pass/fail — that is replayed).
@@ -170,12 +203,16 @@ $PROMPT"
     --argjson score "$SCORE" \
     --arg diffstat "$DIFFSTAT" --argjson untracked "$UNTRACKED" \
     --argjson dispatches "${DISPATCH_N:-0}" --argjson explorers "${EXPLORER_N:-0}" \
+    --argjson critics "${CRITIC_N:-0}" --argjson builders "${BUILDER_N:-0}" \
+    --argjson auditors "${AUDITOR_N:-0}" \
     --argjson skillinv "${SKILL_N:-0}" \
     --arg raw "$(basename "$RAW")" \
     '{task:$task, arm:$arm, rep:$rep, stamp:$stamp, exit_code:$rc,
       wall_s:$wall, cost_usd:$cost, usage:$usage, num_turns:$turns,
       byproxy_skill_invocations:$skillinv,
       subagent_dispatches:$dispatches, explorer_dispatches:$explorers,
+      critic_dispatches:$critics, builder_dispatches:$builders,
+      auditor_dispatches:$auditors,
       score:$score, diffstat:$diffstat, new_files:$untracked, raw:$raw}' \
     | tee -a "$JSONL"
 
