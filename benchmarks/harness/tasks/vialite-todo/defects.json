@@ -1,0 +1,73 @@
+{
+  "task": "vialite-todo",
+  "generated_from": "via @ /home/jgonc/Personal/repos/via, trimmed to via-lite; 6 defects injected on todo-critical paths",
+  "hidden_suite": {
+    "package": "hidden",
+    "total_tests": 287,
+    "clean_pass": 287,
+    "run_with": "-race",
+    "note": "The relocated black-box suite. 100% green on correct code; each defect below turns its catcher(s) red."
+  },
+  "defects": [
+    {
+      "id": "cas-lost-update",
+      "file": "stateapp.go",
+      "symbol": "StateApp.Update",
+      "summary": "On CAS conflict, Update returns nil instead of retrying — concurrent updates to the shared list silently lose writes.",
+      "class": "concurrency/lost-update",
+      "todo_impact": "Two users adding at the same moment: one todo silently dropped.",
+      "catchers": ["TestApp_concurrentUpdatesDoNotLoseIncrements"],
+      "detect_keywords": ["lost update", "cas conflict", "stateapp.update", "does not retry", "doesn't retry", "no retry", "returns nil on conflict", "swallow", "casSleep"]
+    },
+    {
+      "id": "subscription-overwake",
+      "file": "ctx.go",
+      "symbol": "Ctx.subscribed",
+      "summary": "subscribed() returns true for every key (len(lastReads) >= 0 is always true), so every tab is woken on every change regardless of what it read.",
+      "class": "scoping/over-broadcast",
+      "todo_impact": "Every change churns every client; private per-tab drafts can leak to unrelated tabs.",
+      "catchers": ["TestApp_writeWakesOnlyTabsThatReadTheKey", "TestUser_writeWakesOnlyTabsThatReadTheKey"],
+      "detect_keywords": ["subscribed", "lastreads", "over-wake", "overwake", "over-broadcast", "wakes every", "wakes all tabs", "always returns true", "read set"]
+    },
+    {
+      "id": "statesess-cross-session-leak",
+      "file": "statesess.go",
+      "symbol": "StateSess.Update",
+      "summary": "Session-scoped Update fans out with sess=nil (app-wide) instead of the owning session — session state leaks across sessions.",
+      "class": "isolation/session-leak",
+      "todo_impact": "Anything session-scoped bleeds between unrelated users.",
+      "catchers": ["TestUser_writeDoesNotLeakAcrossSessions"],
+      "detect_keywords": ["statesess", "cross-session", "across session", "leak across", "session leak", "session isolation", "sess=nil", "app-wide instead"]
+    },
+    {
+      "id": "sse-premature-clear",
+      "file": "sse.go",
+      "symbol": "drainQueue",
+      "summary": "The drained snapshot is cleared BEFORE the network writes, so a frame lost to a failed write is not retained for redelivery on reconnect (breaks at-least-once).",
+      "class": "delivery/at-least-once",
+      "todo_impact": "A todo change in flight during a connection hiccup vanishes; client never converges.",
+      "catchers": ["TestSSE_redeliversQueuedFrameAfterFailedWrite", "TestSSE_retainsQueuedFramesWhenWriteFails"],
+      "detect_keywords": ["cleardrained", "at-least-once", "redeliver", "retain", "cleared before", "clear before", "before the write", "before writing", "premature clear", "lost on reconnect"]
+    },
+    {
+      "id": "ttl-sweeps-connected",
+      "file": "runtime.go",
+      "symbol": "App.removeExpiredContexts",
+      "summary": "The idle-TTL sweep no longer skips ctxs with a live SSE stream (connected>0), so a connected tab is reaped out from under the user.",
+      "class": "lifecycle/premature-dispose",
+      "todo_impact": "Active users are randomly disconnected when their tab crosses the TTL.",
+      "catchers": ["TestSSE_connectedTabSurvivesContextTTLWithoutHeartbeat"],
+      "detect_keywords": ["removeexpired", "connected", "connected>0", "connected > 0", "live stream", "sweep connected", "reaps connected", "skip the ttl", "ttl skips"]
+    },
+    {
+      "id": "action-not-serialized",
+      "file": "action.go",
+      "symbol": "runAction",
+      "summary": "The per-ctx actionMu lock was removed, so concurrent POSTs to one tab race on state/dirty-bits/writer (data race + inconsistency).",
+      "class": "concurrency/missing-serialization",
+      "todo_impact": "Rapid toggles/adds from one tab race and corrupt per-tab state.",
+      "catchers": ["TestAction_concurrentPOSTsAreSerializedPerCtx"],
+      "detect_keywords": ["actionmu", "serializ", "per-ctx lock", "per-tab lock", "per-ctx serial", "per-tab serial", "concurrent post", "not serialized", "missing lock"]
+    }
+  ]
+}

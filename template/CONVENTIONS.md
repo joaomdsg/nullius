@@ -118,6 +118,6 @@ _This section grows with incidents, postmortems, and painful lessons. Short entr
 
 ## Notes for byproxy
 
-_Project-specific facts byproxy should feed into dispatch `CONTEXT:` fields. Fill these in as you discover constraints an explorer or builder would otherwise have to re-derive: build quirks, non-obvious module boundaries, flaky tests, environment setup._
+_Project-specific facts byproxy should feed into explorer dispatch `CONTEXT:` fields and its own recon. Fill these in as you discover constraints an explorer would otherwise have to re-derive: build quirks, non-obvious module boundaries, flaky tests, environment setup._
 
 -

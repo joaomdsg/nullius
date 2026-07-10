@@ -1,0 +1,146 @@
+package hidden
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/go-via/via"
+	"github.com/go-via/via/vt"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// The value-shaped counterpart of the cross-pod keystone: a
+// value-shaped StateApp.Update on pod A must converge on pod B when both share
+// one backplane. Today StateApp is pod-local (its own appStore), so B never sees
+// A's write — this proves the Store-as-source-of-truth value path. (appCounterPage
+// is defined in stateapp_test.go: a StateAppNum[int] "visits" + Bump action +
+// a <span id="visits"> view.)
+func TestStateAppConvergesAcrossPods(t *testing.T) {
+	t.Parallel()
+
+	shared := via.InMemory()
+
+	appA := via.New(via.WithBackplane(shared))
+	serverA := vt.Serve(t, appA)
+	via.Mount[appCounterPage](appA, "/")
+
+	appB := via.New(via.WithBackplane(shared))
+	serverB := vt.Serve(t, appB)
+	via.Mount[appCounterPage](appB, "/")
+
+	a := vt.NewClient(t, serverA, "/")
+	b := vt.NewClient(t, serverB, "/")
+	framesB, cancelB := b.SSEReady()
+	defer cancelB()
+
+	require.Equal(t, 200, a.Action("Bump").Fire())
+
+	// Pod B's changes-tailer re-pulls the Store cell A wrote and re-renders B's
+	// live tab — value-shaped convergence with no shared process state.
+	vt.AwaitFrame(t, framesB, 2*time.Second, `<span id="visits">1</span>`)
+
+	// A fresh reader on pod B also sees the converged value.
+	require.Eventually(t, func() bool {
+		return strings.Contains(vt.NewClient(t, serverB, "/").HTML(), `<span id="visits">1</span>`)
+	}, 2*time.Second, 20*time.Millisecond, "a fresh reader on pod B must see pod A's write")
+}
+
+// The periodic reconcile sweep is what makes the changes feed a pure latency
+// optimization: a pod must converge to the Store HEAD even when no Change hint
+// ever reaches it. A SILENT (sync-off) Update writes the Store but suppresses
+// the hint, so pod B's changes-tailer never fires — only the sweep can carry
+// B to the value A wrote. (syncOffAppPage lives in ctx_test.go: StateAppNum[int]
+// Visits, BumpSilently = SyncOff + Visits.Update(+1), <span id="visits"> view.)
+func TestReconcileSweepConvergesPeerWithoutAChangeHint(t *testing.T) {
+	t.Parallel()
+
+	shared := via.InMemory()
+	interval := via.WithReconcileInterval(50 * time.Millisecond)
+
+	appA := via.New(via.WithBackplane(shared), interval)
+	serverA := vt.Serve(t, appA)
+	via.Mount[syncOffAppPage](appA, "/")
+
+	appB := via.New(via.WithBackplane(shared), interval)
+	serverB := vt.Serve(t, appB)
+	via.Mount[syncOffAppPage](appB, "/")
+
+	// Register B's value cell (a reader mounts the page) so the sweep has a key
+	// to reconcile, then have A write SILENTLY (no Change hint emitted).
+	_ = vt.NewClient(t, serverB, "/")
+	a := vt.NewClient(t, serverA, "/")
+	require.Equal(t, 200, a.Action("BumpSilently").Fire())
+
+	// B's tailer got nothing (silent suppressed the hint); the sweep must still
+	// carry a fresh reader on B to the value A committed to the shared Store.
+	require.Eventually(t, func() bool {
+		return strings.Contains(vt.NewClient(t, serverB, "/").HTML(), `<span id="visits">1</span>`)
+	}, 2*time.Second, 20*time.Millisecond,
+		"the reconcile sweep must converge pod B even though no Change hint was emitted")
+}
+
+// WithReconcileInterval(0) disables the sweep — a documented mode where the
+// changes feed alone carries convergence. A LOUD write (which emits a hint)
+// must still converge a peer via its changes-tailer with no sweep running.
+// (appCounterPage lives in stateapp_test.go: StateAppNum[int] Visits + loud
+// Bump + <span id="visits"> view.)
+func TestChangesFeedAloneConvergesWithReconcileDisabled(t *testing.T) {
+	t.Parallel()
+
+	shared := via.InMemory()
+	off := via.WithReconcileInterval(0)
+
+	appA := via.New(via.WithBackplane(shared), off)
+	serverA := vt.Serve(t, appA)
+	via.Mount[appCounterPage](appA, "/")
+
+	appB := via.New(via.WithBackplane(shared), off)
+	serverB := vt.Serve(t, appB)
+	via.Mount[appCounterPage](appB, "/")
+
+	a := vt.NewClient(t, serverA, "/")
+	b := vt.NewClient(t, serverB, "/")
+	framesB, cancelB := b.SSEReady()
+	defer cancelB()
+
+	require.Equal(t, 200, a.Action("Bump").Fire())
+
+	// No sweep is running; B converges purely through the changes-feed tailer.
+	vt.AwaitFrame(t, framesB, 2*time.Second, `<span id="visits">1</span>`)
+}
+
+// A backplane wired via WithBackplane must be gracefully drained when the App
+// shuts down — otherwise its goroutines/connections outlive the server. After
+// Shutdown the caller's own reference must observe the closed state.
+func TestWithBackplaneIsDrainedOnShutdown(t *testing.T) {
+	t.Parallel()
+
+	bp := via.InMemory()
+	app := via.New(via.WithBackplane(bp))
+	_ = vt.Serve(t, app)
+
+	require.NoError(t, app.Shutdown(context.Background()))
+
+	_, err := bp.Append(context.Background(), "k", []byte("x"))
+	assert.ErrorIs(t, err, via.ErrClosed,
+		"App.Shutdown must Close the backplane wired via WithBackplane")
+}
+
+// Adding the backplane drain to Shutdown must not regress the default-app path:
+// a plain via.New() (no WithBackplane) still shuts down cleanly. This guards the
+// new Close() step; that the nil default actually resolves to a real InMemory
+// backplane (rather than a tolerated nil) is verified once Read/Append on the
+// handle exist (P1.1b) — it is not black-box observable at this slice.
+func TestDefaultAppShutsDownCleanlyWithBackplaneDrain(t *testing.T) {
+	t.Parallel()
+
+	app := via.New()
+	_ = vt.Serve(t, app)
+
+	assert.NotPanics(t, func() {
+		require.NoError(t, app.Shutdown(context.Background()))
+	}, "a default app resolves nil to InMemory and drains it without panic")
+}

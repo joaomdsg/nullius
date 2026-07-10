@@ -1,153 +1,112 @@
 # byproxy
 
-You act by proxy. You never touch the code directly.
+Facts by proxy. You build; explorers guard.
 
-A multi-agent coding orchestrator for Claude Code — and the benchmark
-harness that honestly refuted half of it.
+A guard layer for coding agents in Claude Code: the capable model designs,
+writes the code, and judges — cheap read-only explorers gather every fact,
+execute every check, and audit every diff. The model doing the judging
+never gathers its own evidence; the model gathering evidence never judges.
 
-## What this is now
+## Why this shape
 
-byproxy began as a cost thesis: *the capable model is expensive, so ration
-it — cheap explorers as its eyes, one mid-tier builder as its hands, the
-orchestrator reasoning only over terse telegraphs.* Four benchmarks later
-([`benchmarks/`](benchmarks/), every claim with a measured bill), the thesis
-is dead and something better survived:
+byproxy's benchmarks (see below) refuted it twice. Benchmark 4 killed the
+cost thesis: orchestrating the build through cheaper models buys nothing once
+the mid-tier is capable enough to just do the work. Benchmark 5 — built to
+measure quality directly, with seeded defects and a hidden oracle — killed
+the quality thesis too: with the guard layer forced and verified, it fixed no
+more defects and disclosed no more of them than a plain solo run, while
+running cheaper. The epistemics that *looked* like the durable win in early
+inline runs did not survive controlled measurement.
 
-- **The cost thesis: refuted.** Solo sonnet-5 rewrote a public API with
-  distributed semantics for $2.44, beating every orchestrated
-  configuration and solo opus. The frontier moved: the cheap model is
-  capable, so there is nothing left to arbitrage. byproxy's own harness
-  proved this against byproxy.
-- **The guard layer: verified.** Across every benchmark, the pieces that
-  caught real defects and prevented real information loss were the
-  *epistemics*: the TGS reporting obligations, the design red-team, the
-  independent audit, and final reports that disclose their own known gaps.
-  Solo runs shipped unqualified success; orchestrated runs shipped a
-  defect list. Same green tests — different value to the human who has to
-  maintain the code.
+What honestly remains is narrower than the original pitch, and worth being
+clear about: the guards make a run **cheaper and more legible**, not more
+correct. Recon and audit delegate reading to Haiku (the measured ~41% cost
+cut), and a run that discloses its own gaps is easier to trust than one that
+ships unqualified success — even when the two are equally correct. That is
+the case for the shape below; it is not a case that it finds more bugs.
 
-So read this repo two ways: as a working orchestration skill (it completes
-L-tasks 100% of the time in headless runs, with an audit trail), and as a
-documented experiment whose honest conclusion is that you probably want
-its guards more than its org chart.
+byproxy v3 is only the guards:
 
-## The architecture
+- **Recon** — parallel explorers pull house patterns, existing symbols,
+  and test layout before design. Facts arrive quoted, gaps declared.
+- **Design gate** — the builder compiles its own design into falsifiable
+  checks from a fixed failure taxonomy (write-only API, mandated-untested
+  code, trivially-passing tests, symbol collisions); an explorer executes
+  them mechanically — pass/fail with verbatim evidence — before any code
+  exists. The explorer never critiques; it verifies claims against the tree.
+- **Guarded TDD build** — done directly by the capable model: right-reason
+  failure quoted before implementation, minimal to green, prune.
+- **Independent audit** — a cold explorer re-runs the exit checks and hunts
+  uncovered code per landed unit; the final audit runs the whole suite.
+  Every accepted risk is written down in the close.
 
-The **control plane / data plane** split from networking, applied to
-coding agents. The orchestrator decides and dispatches; it never reads a
-project file or runs a project command.
+Explorer reports always carry `VERBATIM` (machine output quoted, never
+paraphrased) and a mandatory `UNKNOWN` — the cheapest model in the loop
+never decides what information survives, and confident silence is treated
+as the failure mode.
 
-- **Orchestrator.** Reasons over telegraphs only. Its judgment is the
-  system's scarce resource — benchmarks showed a strong-but-terse control
-  plane (13–15 turns) keeps the fleet cheap, and a weak one flails
-  expensively. Don't cheap out here; the price is paid in dispatch
-  discipline, not per-token rates.
-- **Explorers** (Haiku, read-only tool fence). One narrow question each:
-  recon, design red-team, post-unit audit. They report facts and quote
-  machine output verbatim — never verdicts. The cheapest model in the loop
-  must never decide what information survives.
-- **Builder** (Sonnet, the only writer). One fresh instance per unit,
-  executing a full guarded TDD cycle per dispatch against a forwarded
-  context pack — never resumed across units (measured: a warm builder
-  transcript re-bills its history every resume and dominated cost in
-  benchmark 2).
+## The record
 
-## TGS — the telegraph protocol
+The data that forced this shape. Benchmarks 1–4 were generated at commit
+[`8f7ed5c`](../../tree/8f7ed5ca7fdd4f966138e6e8d92cbb9a0b57ebd1) under the
+earlier orchestrated architecture; benchmark 5 tests the current guard layer.
+Full reports with every bill in [`benchmarks/`](benchmarks/).
 
-All inter-agent messages use **TGS** (Telegraphic-Grok-Schema): labeled
-fields, no prose, machine output quoted verbatim and bounded, absence
-reported explicitly. `UNKNOWN:` is mandatory — confident silence is the
-failure mode. `RULED-OUT:` prevents re-dispatching dead ends. A builder
-dispatch:
+| bench | task | result |
+|---|---|---|
+| 1 (inline) | S: add one method | orchestration ~40% cheaper than solo opus |
+| 2 (inline) | L: chunked uploads | orchestration loses 1.8× — builder re-entry cost diagnosed |
+| 3 (headless, n=3/arm) | L: chunked uploads | cost tie vs solo opus; orchestrated runs ship self-auditing reports |
+| 4 (headless grid) | L: public-API rewrite | **solo sonnet dominates all arms ($2.44)**; cost thesis refuted |
+| 5 (headless, n=5/arm) | quality: seeded-defect todo app | **guard layer ~41% cheaper, no fix-rate or disclosure gain**; quality thesis refuted too |
 
-```
-TASK: fix off-by-one token count lex.go:31
-SCOPE: lex.go only
-CONTEXT: comment lex.go:29 claims intentional skip — preserve intent or update it
-DONE-WHEN: TestParseHeader + TestComment green
-ESCALATE-IF: 2 consecutive fail runs | fix requires touching parse.go | diff >30 lines
-```
-
-Full spec: [`references/tgs-spec.md`](.claude/skills/byproxy/references/tgs-spec.md).
-These reporting obligations are the repo's most transferable idea — they
-survived every benchmark and belong in any multi-agent system, byproxy or
-not.
-
-## The guarded build cycle (RYGB v2)
-
-The builder never writes freehand, and byproxy never pays a dispatch per
-TDD phase (measured: that tripled builder turns for no correctness gain):
-
-- **Design red-team** (once per task) — the orchestrator fixes each unit's
-  test list and API surface; an explorer attacks the design before
-  anything builds: write-only features, mandated-but-untested code,
-  trivially-passing tests.
-- **One dispatch = one unit's full cycle** — tests first, right-reason
-  failure quoted verbatim, minimal implementation, prune, diff stat
-  quoted (bounds are verified by the orchestrator, never trusted).
-- **Audit, pipelined** — an explorer audits each landed unit while the
-  next unit builds; the final audit re-runs everything as verification.
-
-Full spec: [`references/rygb-cycle.md`](.claude/skills/byproxy/references/rygb-cycle.md).
+Benchmarks 1–4 couldn't discriminate on quality — every arm completed, so
+only cost and latency separated them, and the guards' value showed up only
+as anecdote (self-auditing reports). Benchmark 5 was built to measure quality
+directly, with seeded defects and a hidden oracle, and forced+verified the
+guard layer actually ran (9–12 explorer dispatches per rep). The result: on
+that task at sonnet strength, the guards bought cost, not correctness — solo
+sonnet matched byproxy's fix rate and shipped no more silent bugs, and found
+the hardest defect *more* often. The org chart fell in benchmark 4; the
+epistemics fell in benchmark 5. What's left is an honest, well-instrumented
+harness and the reporting discipline — worth keeping, not for a measured
+quality edge, but because a run that discloses its own gaps is easier to
+trust even when it isn't more correct.
 
 ## The benchmark harness
 
 [`benchmarks/harness/`](benchmarks/harness/) runs any task as a grid of
-arms — orchestrated or solo, any model pins — headlessly: fresh git
-worktree per rep from a pinned commit, one `claude -p` per run under auto
-permission mode (no bypass), measured `total_cost_usd`, and **independent
-scoring that never trusts a run's self-report** (it caught a builder
+arms — guarded or solo, any model pins — headlessly: fresh git worktree
+per rep from a pinned commit, one `claude -p` per run under auto
+permission mode (no bypass), measured `total_cost_usd`, and independent
+scoring that never trusts a run's self-report (it caught an agent
 reporting green on a broken test build, and its own scoring bug).
 
 ```sh
-./run.sh tasks/p24-broadcast solo --reps 3                       # solo arm
-ORCH_MODEL=claude-fable-5 ORCH_EFFORT=low \
-  ./run.sh tasks/p24-broadcast byproxy --reps 3                  # orchestrated arm
+./run.sh tasks/p24-broadcast solo --reps 3
+./run.sh tasks/p24-broadcast byproxy --reps 3
 ```
-
-## The record
-
-| bench | task | result |
-|---|---|---|
-| 1 (inline) | S: add one method | byproxy ~40% cheaper than solo opus |
-| 2 (inline) | L: chunked uploads | byproxy loses 1.8× — builder re-entry diagnosed → v2 redesign |
-| 3 (headless, n=3/arm) | L: chunked uploads | cost tie vs solo opus; byproxy: $0.15 cost spread + self-auditing reports |
-| 4 (headless grid) | L: public-API rewrite | **solo sonnet dominates all arms ($2.44)**; sonnet-orchestrator ablation fails; cost thesis refuted |
-
-All 12 scored headless runs, both architectures, completed their DoD
-(6 acceptance tests + vet + full race suite) — completion doesn't
-discriminate at this task size; cost, latency, and report honesty do.
-
-## Where this goes (v3, if built)
-
-The rational default today is **solo sonnet + byproxy's guard layer**:
-recon-informed context up front, a design red-team before building, an
-independent audit after — ~$0.10–0.60 of explorer time wrapped around a
-$2.44 solo run, capturing the measured quality value at a tenth of the
-measured orchestration premium. Orchestration optional; epistemics
-mandatory.
 
 ## What's in this repo
 
 ```
 .claude/
-  skills/byproxy/           # orchestrator instructions (SKILL.md) + references
-  agents/                   # byproxy-explorer (haiku, read-only), byproxy-builder (sonnet)
-benchmarks/                 # four benchmark reports, every claim with a bill
+  skills/byproxy/SKILL.md   # the guard-layer skill (workflow, gate taxonomy, protocol)
+  agents/                   # byproxy-explorer (haiku, read-only tool fence)
+benchmarks/                 # measured reports, every claim with a bill (commit 8f7ed5c)
   harness/                  # the headless grid runner + tasks
-template/CONVENTIONS.md     # questions-not-rules conventions template → dispatch CONTEXT
+template/CONVENTIONS.md     # questions-not-rules conventions template → recon context
 ```
 
 ## Getting started
 
-byproxy is a **Claude Code skill** (Claude-specific — it relies on Claude
-Code's subagent dispatch and agent-definition model). Install both pieces:
+byproxy is a **Claude Code skill** (it relies on Claude Code's subagent
+dispatch and agent-definition model). Install both pieces:
 
 ```sh
 git clone https://github.com/joaomdsg/byproxy.git
 ln -s "$(pwd)/byproxy/.claude/skills/byproxy" ~/.claude/skills/byproxy
 ln -s "$(pwd)/byproxy/.claude/agents/byproxy-explorer.md" ~/.claude/agents/byproxy-explorer.md
-ln -s "$(pwd)/byproxy/.claude/agents/byproxy-builder.md"  ~/.claude/agents/byproxy-builder.md
 ```
 
 Agent definitions load at session start — restart Claude Code after
@@ -157,6 +116,6 @@ own repo and measure before you believe anything, including this README.
 ## The philosophy in one sentence
 
 Make the cheap model report instead of judge, make the builder prove its
-failures before its fixes, audit everything independently, and publish the
-bill — because the benchmark that can refute you is worth more than the
-architecture it refuted.
+failures before its fixes, audit everything with cold eyes, and publish
+the bill — because the benchmark that can refute you is worth more than
+the architecture it refuted.

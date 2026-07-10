@@ -1,164 +1,112 @@
 ---
 name: byproxy
-description: Orchestrate multi-agent explore/build coding tasks hands-off — you act by proxy, never directly. Cheap explorer subagents are the eyes, one mid-tier builder is the hands, and you (the orchestrator) only reason over telegraphic TGS reports. Use this skill whenever the user asks to run a multi-agent workflow, dispatch subagents, orchestrate explorers/builders, delegate a coding task to a fleet, or mentions byproxy/TGS/telegraphic agents — and for any large task where exploration should be delegated to cheaper models to save orchestrator tokens.
+description: Guard-layer for coding tasks — you build directly, and cheap read-only explorers (byproxy-explorer) guard the work with facts by proxy - recon before, a compiled design gate before building, an independent audit after. Use whenever the user invokes byproxy, asks for a guarded/audited build, mentions explorers or design gates, or hands over a task where independent verification of design and result matters more than speed.
 ---
 
 # byproxy
 
-You act by proxy. You never touch ground truth directly — like a control
-tower that never flies the aircraft.
+You build. Explorers guard. The one rule that survives everything: **the
+model doing the judging never gathers its own evidence, and the model
+gathering evidence never judges.** You (the capable model) design, write
+code, and rule on findings. Explorers (Haiku, read-only) fetch facts,
+execute checks, and audit results — they report and quote, never conclude.
 
-Cheap explorers (Haiku-class) read the world. One builder (Sonnet-class)
-changes it. You reason ONLY over TGS telegraphs. Your telegraph log is the
-system's only memory — anything not telegraphed does not exist.
+Every claim that matters arrives as an explorer report with machine output
+quoted VERBATIM and gaps declared under UNKNOWN. Confident silence is the
+failure mode; visible gaps are cheap.
 
-## Prime rules
+## Report protocol
 
-1. **Never touch ground truth directly.** No file reads, no command runs.
-   Need a fact → dispatch explorer with a narrow question. Doubt an answer
-   on a load-bearing fact → dispatch a second explorer, compare.
-   *Exempt:* your own instructions — the `byproxy/` skill and reference files
-   (`references/tgs-spec.md`, `references/rygb-cycle.md`) and the project's
-   `CONVENTIONS.md`. Those are directives, not ground truth; read them.
-2. **All messages in TGS.** Yours included — your output tokens are the
-   most expensive in the system. No prose, no restating reports, no
-   narration. Compose dispatches from `references/tgs-spec.md` (read it
-   once at task start).
-3. **Append-only log.** Never rewrite or reorder earlier telegraphs — the
-   stable prefix is what makes your context cache-cheap. Appending a fresh
-   state snapshot (e.g. the open RYGB queue before a long stretch or
-   possible compaction) is allowed and encouraged: it appends, it does not
-   rewrite history.
-4. **Explorers parallel, builder serial.** Batch all independent explorer
-   questions into ONE turn (parallel dispatch = wall-time win). One builder,
-   one task at a time (coherence, no merge conflicts).
-5. **Mechanical exits.** Every builder dispatch has DONE-WHEN a machine can
-   check (tests green, file exists, command exits 0) and ESCALATE-IF with
-   deterministic triggers. Set a concrete diff/scope bound per dispatch;
-   only when you fail to set one does the builder fall back to a coarse
-   outgrows-TASK judgment — treat that fallback as your spec bug, not a norm.
+Explorer dispatches carry: `TASK:` (one action) · `SCOPE:` (files/dirs
+allowed) · `CONTEXT:` (facts the explorer needs, nothing else) · `REPORT:`
+(fields expected back) · a budget (`≤N tool calls`).
+
+Explorer reports carry: `STATUS: done|partial|fail` · `FACTS:` ·
+`VERBATIM:` (raw quoted machine output, never paraphrased) · `RISKS:`
+(anomalies, even off-question) · `UNKNOWN:` (mandatory — explicit `none`
+required) · optional `RULED-OUT:`.
+
+A report missing VERBATIM or UNKNOWN is incomplete — re-ask once, then
+replace the agent. Identifiers stay exact and full. Batch all independent
+explorer dispatches into one turn; they are read-only and parallelize free.
 
 ## Workflow
 
 ```
-1. DECOMPOSE   task → questions (parallel) + build units (serial).
-               S-task → ONE unit; don't manufacture decomposition
-2. RECON?      terrain unfamiliar → 1 open recon dispatch. familiar → skip
-3. EXPLORE     fan out ALL independent questions in one turn.
-               pull project facts from CONVENTIONS.md into dispatch CONTEXT
-4. DESIGN      draft the full design: per unit, the test list (assert-level),
-               API surface, SCOPE, DONE-WHEN. then ONE explorer red-teams it
-               (mode: design) — missing API surface? mandated code no test
-               forces? wrong assumptions vs recon FACTS? fix before building
-5. BUILD       per unit, ONE fresh builder dispatch = the full guarded cycle
-               (references/rygb-cycle.md): tests first → right-reason failure
-               quoted → minimal impl → green → self-prune. context pack in
-               CONTEXT (see below). builder serial, one unit in flight
-6. AUDIT ∥     unit N green → dispatch its audit explorer (mode: blue,
-               includes DONE-WHEN re-run) IN THE SAME TURN as unit N+1's
-               builder. you judge findings: pure cleanup → fold into the
-               next unit's dispatch (or one final FIX dispatch); new
-               behavior/bug → queue as its own unit
-7. ON ESCALATE dispatch explorer to diagnose → re-issue the unit to a fresh
-               builder with the failure VERBATIM + DIAG/FIX in CONTEXT.
-               never diagnose by reading code yourself
-8. CLOSE       final audit doubles as VERIFY (full suite VERBATIM), then one
-               TGS summary to user: STATUS/FACTS/RISKS/UNKNOWN
+1. RECON    fan out parallel explorers: house patterns, existing symbols,
+            test layout, the specific files the task touches. unfamiliar
+            terrain → one open recon sweep. their FACTS are your context.
+2. DESIGN   draft the plan: units, per-unit test list (assert-level),
+            API surface, files touched.
+3. GATE     compile the design into falsifiable checks (taxonomy below).
+            one explorer (mode: check) executes them mechanically —
+            pass|fail + VERBATIM per check. you judge the results and
+            amend the design before any code exists.
+4. BUILD    you write it, one unit at a time, guarded TDD:
+            tests first → run → quote the failure VERBATIM and confirm it
+            fails for the right reason (missing behavior, not test bug) →
+            minimal implementation to green → prune (every line: would
+            deleting it fail a test? no → delete).
+5. AUDIT    per landed unit, one explorer (mode: audit) — independent, it
+            sees the diff cold: re-run the unit's exit check, uncovered
+            exports/branches, code no test forces, risky lines quoted.
+            you rule on each finding: fix now | queue | accept (say why).
+6. CLOSE    final audit = full suite + vet, quoted VERBATIM. then report
+            to the user: STATUS / FACTS / RISKS / UNKNOWN — including
+            what was NOT tested. never ship unqualified success.
 ```
 
-Step 2 heuristic: skip recon iff the log or the user already establishes the
-terrain. When in doubt, recon — one Haiku run buys peripheral vision.
+Small task → collapse to GATE + BUILD + final AUDIT. Don't manufacture
+ceremony; never skip the audit.
 
-**Context packs.** A fresh builder knows nothing. Its dispatch CONTEXT must
-carry every established fact the unit needs — forwarded telegraph FACTS
-(file:line anchors, API signatures, house patterns, prior units' changes),
-not instructions to "go read". ~1–3k tokens of pack per dispatch replaces a
-warm transcript that re-bills its whole history on every resume. Forward
-facts verbatim from the log; never re-derive, never make the builder
-re-explore.
+## The design gate — compiled checks, not opinions
 
-## Dispatching subagents
+Never ask an explorer to critique a design — that's judging. Instead you
+derive concrete checks it can answer by grep-and-quote, at least one per
+pattern below (the taxonomy is fixed; it encodes the failure modes that
+proved expensive, not the ones you happen to worry about):
 
-Spawn via the Agent tool. The agent definitions carry the TGS-embedded system
-prompts, the model tier, and the tool fences — you only send TGS dispatch
-fields as the prompt.
+1. **write-only API** — for each thing stored/produced: which listed test
+   retrieves/observes it? (`does any test assert the response BODY of
+   GET /uploads/{id}, not just the status?`)
+2. **mandated-untested code** — for each design-mandated branch/behavior:
+   which listed test forces it? (`does any test in unit 2's list exercise
+   the eviction branch?`)
+3. **trivially-passing test** — could a listed test pass on the bare
+   existing tree? (`does a bare mux already return the 404 this test
+   asserts?` — explorer can run it)
+4. **collision** — do the design's new symbols/routes/patterns clash with
+   existing ones? (`symbol Broadcast absent from pkg/hub? quote the
+   existing mux registration pattern verbatim`)
 
-- Explorer: `subagent_type: byproxy-explorer` (Haiku). Edit/Write are absent
-  from its tool fence; Bash is granted so it can run tests/builds, so
-  read-only-through-Bash is enforced by its prompt discipline, not the
-  platform. Never put a write instruction in an explorer dispatch. State the
-  mode in the dispatch: `recon` | `narrow` | `design` | `blue`.
-- Builder: `subagent_type: byproxy-builder` (Sonnet, write tools). One at a
-  time, serial.
-- Explorers parallel → send them as multiple Agent calls in ONE turn.
-- Send nothing outside TGS fields.
+The explorer answers pass|fail with quotes. Anomalies beyond the checklist
+land in its RISKS — that channel is your coverage for the failure modes
+you didn't think to check.
 
-Install note: these agents live in `.claude/agents/`. A project that only
-symlinks the skill won't get them — see the README install step. Agent
-definitions load at session start: if `byproxy-*` types are missing from
-the registry, fall back to generic agents with the role instructions
-inlined in the dispatch — it works, but measured ~2.5× more expensive per
-dispatch. Prefer a session restart.
+## Build discipline (guarded TDD)
 
-## Dispatch economics (measured, benchmarks 1–2)
+- Test only through the public API; no mocks for domain logic — mock only
+  genuine I/O boundaries (network, disk, clock, randomness).
+- The red quote is mandatory: no implementation before a right-reason
+  failure is on the record.
+- All green includes pre-existing tests — a broken neighbor is root-caused,
+  never suppressed.
+- Wiring/orchestration code needs no unit test — build/vet/run it.
+- Smallest diff that satisfies the exit check. No drive-by refactors.
 
-- **Never resume a builder across units — the transcript tax dominates.**
-  Benchmark 2: one builder resumed over 9 dispatches cost 33k → 120k per
-  dispatch as its transcript grew — 659k sonnet total, more than the whole
-  task was worth. A fresh builder + a 1–3k context pack per unit is an
-  order of magnitude cheaper than a warm transcript at L scale. Resume a
-  builder ONLY within a unit for a single bounded redirect; anything more →
-  fresh builder, failure quoted in CONTEXT.
-- **One dispatch = one full unit cycle, not one phase.** Phase-per-dispatch
-  tripled builder turns for zero measured correctness gain over an
-  internally-disciplined cycle (right-reason quote mandatory) plus an
-  independent async audit.
-- **Red-team the design before building.** Both expensive reworks in
-  benchmark 2 were orchestrator authoring errors (missing API surface,
-  mandated-but-untested branches). One design-mode explorer pass (~2k
-  opus-equivalent) is the cheapest correctness money in the system.
-- **Bound every explorer.** Cheap per token still compounds: give narrow
-  SCOPE and an explicit budget in the dispatch (`≤8 tool calls`, `scoped
-  test only, not full suite`) or a Haiku audit will happily run the world.
-- **Audit ∥ build.** Unit N's audit (read-only) runs in the same turn as
-  unit N+1's builder. The final audit doubles as VERIFY (full suite,
-  VERBATIM). Attacks wall time, which pricing can't fix.
-- **Verify bounds, don't trust them.** Builders self-waive prompt-level
-  limits (observed once). Require `git diff --stat` VERBATIM in every
-  builder report and check the numbers against ESCALATE-IF yourself.
-- **Price in dollars, not tokens.** Haiku ≈ 1/15, Sonnet ≈ 1/5 of
-  Opus-class list price. Raw token counts across tiers are not comparable;
-  never judge a run by summing them.
+## Audit independence
 
-## Failure handling
+You never audit your own diff — proximity to the code you just wrote is
+exactly the blind spot the audit exists to remove. The auditor gets the
+unit's exit check and SCOPE, not your reasoning or your confidence. Its
+findings come back as facts; the verdicts are yours, and every accepted
+risk is written down in the CLOSE.
 
-- Malformed report → `NEED: resend TGS`. Twice malformed → replace agent.
-- Builder 2nd escalation on same task → your spec is wrong, not the builder.
-  Re-explore, re-spec. 3rd → surface to user with STATUS: fail.
-- Explorer UNKNOWN on load-bearing fact → follow-up dispatch, never assume.
-- Conflicting explorer reports → don't just re-run the same question (same
-  model, same files, same blind spot — errors correlate). The tiebreaker must
-  differ on an axis: a different method (`grep the call sites` vs `read the
-  module`), a different entry point, or a stronger model (`model: sonnet` on
-  the Agent call). Still split → surface to user with both VERBATIMs.
-- Context-hungry judgment (a verdict a ~400-token report can't carry —
-  design fit, abstraction choice, subtle semantics): dispatch an explorer for
-  a bounded VERBATIM package — the exact excerpt you need, ≤80 lines,
-  identifiers intact — and judge from that. A bounded quoted excerpt in a
-  telegraph is not a Rule-1 violation; unbounded file paging is. If one
-  package isn't enough, ask the user rather than paging the codebase into
-  your context.
+## Economics
 
-## Token discipline (why each rule exists)
-
-Raw file contents pulled into your context are re-fed to the expensive model
-every turn and bloat the prefix. Telegraphs stay small and keep the
-append-only prefix cache-stable, so cost grows slowly. Diagnosis-by-explorer
-is much cheaper than diagnosis-by-reading — a cheap model does the paging,
-you spend your tokens deciding. Your reasoning stays full-fat — compress the
-channels, never the scratchpad.
-
-Honesty: these are design bets, not measured constants. The economics win on
-tasks big enough that re-reading dominates; on a three-file change, one
-orchestrator reading the files directly may be cheaper. Validate on your own
-workload before trusting the frame.
+Explorers are Haiku — roughly 1/15 the price of the top tier — and every
+guard here is grep-and-quote work sized for them. The full guard layer
+(recon + gate + audits) costs a fraction of one build mistake; the measured
+history behind that claim lives in `benchmarks/` (data generated at commit
+8f7ed5c, under this project's earlier architecture — read it before
+trusting or extending it).
