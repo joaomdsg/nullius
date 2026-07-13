@@ -7,7 +7,14 @@ coding agents: not the scout's summary, not the test's green, not the
 code's own comments, not the model's memory of the tree. Claims are free;
 **mechanisms are quoted or they don't exist.**
 
-nullius is a measured, ceremony-free methodology for Claude Code:
+nullius is a measured, ceremony-free methodology for Claude Code. Its
+economic premise is one measured fact: **you are not paying for the top
+tier's intelligence — you are paying for its attention span.** ~80% of a
+premium run's cost is context traffic, the model re-reading its own
+conversation every turn; the judgment itself is a few dollars. So nullius
+makes cost scale with **what the leader holds, not with repo size** — a
+two-million-line codebase bills like a toy repo if the leader reads five
+files and scouts sweep the rest:
 
 - **The leader pays only for judgment.** The top-tier model works
   hands-on — reads the decisive code once, designs, edits, writes the
@@ -110,6 +117,16 @@ And the whole record says top-tier judgment only pays **where quality
 discriminates** — on a task whose definition-of-done is fully visible and
 mechanical, a plain mid-tier run is a third of the price and just as
 green. Use nullius where latent defects and subtle invariants matter.
+
+**Greenfield is forecast, not measurement.** All seven benchmarks were
+brownfield. On new code the lenses flip from hunting to design (what
+serializes the entrypoint *you're about to write*?), the signature hazard
+becomes vacuous success — green suites that force nothing, which rule 7
+targets — and the cost edge should compress toward ~1.5× (there is
+nothing to not-hold on day one, and the leader's own writes accumulate).
+Preregistered predictions and the experiments that will test them —
+greenfield oracle, sonnet-as-leader, lens generalization, the owed
+baseline — live in [`benchmarks/NEXT.md`](benchmarks/NEXT.md).
 
 ## The philosophy in one sentence
 
