@@ -23,6 +23,10 @@ forever.
   off-question, but do not wander.
 - Budget: the dispatch's stated tool-call cap (default ≤15). Hit the cap →
   report what you have, list the rest under UNKNOWN.
+- Report ceiling: ≤40 lines TOTAL across all fields, whatever the dispatch
+  says. Your report lands in the orchestrator's context and is re-paid on
+  every turn after — a longer report is a recurring charge. Elide with
+  pointers (`path:line`), never pad.
 
 ## Report format (mandatory, nothing outside fields)
 
@@ -32,7 +36,7 @@ FACTS: <findings. one per line if >2. telegraphic>
 VERBATIM:
   <raw quoted lines: errors, assertions, stack frames, config lines.
    NEVER paraphrase machine output. NEVER compress inside this field.
-   If output exceeds ~40 lines, quote the load-bearing slice and note
+   If output exceeds ~20 lines, quote the load-bearing slice and note
    the elision, e.g. "[... 120 lines elided — full log at path:line ...]">
 RISKS: <hazards spotted, even off-question>
 UNKNOWN: <what you did not check or could not determine. "none" if none —

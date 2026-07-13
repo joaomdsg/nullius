@@ -15,21 +15,51 @@ experimenter steering mid-run, and single samples.
   vet + full race suite against the tree. A run's self-report is never
   trusted (observed failure mode: builder reported green with a broken
   test build).
-- Model pins: byproxy arm orchestrator = **claude-fable-5 @ low effort**
-  (the control plane should be smart but cheap-per-token-and-terse;
-  explorer/builder tiers come from the agent definitions). Plain arm =
-  **claude-opus-4-8** (the "just let the expensive model read the files"
-  baseline; override with `PLAIN_MODEL=`, or legacy `SOLO_MODEL=`).
+- Model pins: byproxy arm control plane = **claude-sonnet-5 @ high effort**
+  (v6 — measured: ~80% of run cost is context traffic, and a *resident*
+  fable-5 orchestrator spent $9–10/run on that traffic alone; the premium
+  tier is pinned to the one small-context judgment call, the critic, via
+  its agent definition). Override with `ORCH_MODEL=`/`ORCH_EFFORT=`;
+  explorer/builder/critic tiers come from the agent definitions. Plain
+  arm = **claude-opus-4-8** (the "just let the expensive model read the
+  files" baseline; override with `PLAIN_MODEL=`, or legacy `SOLO_MODEL=`).
 
-The two arms are `byproxy` and `plain` (formerly `solo`). **`plain` means
-plain Claude Code with no byproxy skills/agents and no global config — not
-"no subagents".** Both arms get the same allowlist, native subagent dispatch
-included; they differ only by the guard layer (the project `.claude/skills`
-+ `agents` and the forced-methodology prompt the byproxy arm gets). Run
-`plain` under `CONTAINER=1` for the "no global config" guarantee (see below):
-a host run inherits your `~/.claude`, so neither arm is truly plain on the
-host — only inside the fixed image. Historical `results.jsonl` rows keep
-their `solo-*` labels.
+Six arms:
+
+- `plain` — plain Claude Code, no byproxy skills/agents, no global config
+  (**not** "no subagents"; the native subagent scaffold is still there).
+  Gets a minimal symmetric disclosure ask so `caught` is measured fairly.
+- `byproxy` — the full guard layer (v6), forced via the appended methodology.
+- `plain+report` — `plain` **plus** the full RISKS report format, no guard
+  layer: isolates whether the report *format* alone drives disclosure.
+- `byproxy-noaudit` — the full guard layer **minus** the cold auditor:
+  isolates what the audit itself buys (row must show `auditor_dispatches:0`).
+- `byproxy-nobuilder` — the guard layer with the orchestrator/builder
+  **split** removed: same contracts, critic, gate, and cold audit, but the
+  orchestrator implements every unit itself (row must show
+  `builder_dispatches:0`). Measured (benchmark 7): the split is pure waste
+  at same tier — −38% cost, quality unchanged.
+- `fable-lean` — **the measured-best config (benchmark 7)**: no ceremony at
+  all. A hands-on top-tier leader (default `claude-fable-5@low`; override
+  `LEAN_MODEL=`/`LEAN_EFFORT=`) that delegates all bulk context — builds,
+  tests, sweeps, verification reruns — to throwaway haiku explorers, hunts
+  with quoted-mechanism lenses, and fixes everything confirmed in-mandate
+  before close. Confirmed n=4: quality ≥ plain fable every rep at 36% of
+  its cost.
+
+**`plain` means plain Claude Code with no byproxy skills/agents and no global
+config — not "no subagents".** Every arm gets the same allowlist, native
+subagent dispatch included; they differ only by the guard layer and the
+report ask. Run under `CONTAINER=1` for the "no global config" guarantee
+(see below): a host run inherits your `~/.claude`, so nothing is truly plain
+on the host — only inside the fixed image. Historical `results.jsonl` rows
+keep their `solo-*` labels.
+
+**Blind disclosure judge.** `JUDGE=1` runs `judge.sh` after each rep — it
+judges the report+diff **blind to the arm** and free of the detect keywords,
+and writes `blind_disclosure` onto the row. This is the trusted disclosure
+metric; `score.sh`'s keyword `caught` is the lower-trust secondary. Judge
+tier is `JUDGE_MODEL` (default `claude-sonnet-5`).
 
 ## Usage
 
@@ -72,6 +102,11 @@ default bridge (outbound-only); the container is otherwise isolated.
 The image is a fixed `byproxy-bench:latest` — deliberately not overridable.
 A controlled env that can be swapped per run isn't controlled; the CLI and
 toolchain pins live in the `Dockerfile` (rebuild to change them, on purpose).
+The image ships `gcc` with `CGO_ENABLED=1` so the race detector works
+*inside* the sandbox — without it, every arm's `go test -race` silently
+degrades to non-race runs (measured: a run disclosed "-race was not run: no
+C compiler") while host-side scoring still races, an asymmetry that guts
+race-forcing exit checks.
 
 ## Adding a task
 

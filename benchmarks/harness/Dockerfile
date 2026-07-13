@@ -11,14 +11,19 @@ FROM node:22-bookworm-slim
 # Go toolchain, pinned to the vialite-todo task's `toolchain go1.26.4`.
 # GOTOOLCHAIN=local forbids go from silently fetching a different toolchain,
 # so the compiler is exactly what this image ships — no network drift.
+# gcc + libc6-dev: the Go race detector requires cgo. Without a C compiler
+# the agent inside the sandbox cannot run `go test -race` at all (measured:
+# a run disclosed "-race was not run: no C compiler", gutting every
+# race-forcing exit check while host-side scoring still used -race).
 ARG GO_VERSION=1.26.4
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ca-certificates curl \
+ && apt-get install -y --no-install-recommends git ca-certificates curl gcc libc6-dev \
  && rm -rf /var/lib/apt/lists/* \
  && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
     | tar -C /usr/local -xz
 ENV PATH=/usr/local/go/bin:$PATH
 ENV GOTOOLCHAIN=local
+ENV CGO_ENABLED=1
 
 # Claude Code CLI, pinned to the host version used for the measured campaign.
 ARG CLAUDE_VERSION=2.1.206

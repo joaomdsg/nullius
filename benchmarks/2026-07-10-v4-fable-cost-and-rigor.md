@@ -144,13 +144,14 @@ conclusions as much as this one. Ranked by ability to flip a headline.
    rep) and the extracted report describe only the final segment. Cost is
    cumulative and survives; turn-based readings do not.
 
-**Status of these threats.** They are now bound by a written preregistration
-for the powered rerun — [`PREREGISTRATION-v5.md`](PREREGISTRATION-v5.md) —
-which fixes the analysis in advance: #7 is closed in the scorer (a
-`hidden.race_check` now runs the suite under `-race` and flags a shipped
-race); #2/#8 were closed in the v4 harness; #1/#3/#4/#5/#6 are design issues
-the v5 arms, symmetric reporting, blind judge, and single-α rule address.
-Nothing there is a result yet — it is the contract for producing one.
+**Status of these threats.** Several are now closed in the harness: #7 in the
+scorer (a `hidden.race_check` runs the suite under `-race` and flags a shipped
+race); #2/#8 in the v4 harness; and #4/#6 in `run.sh` — a symmetric disclosure
+ask on every arm plus a blind judge (`judge.sh`, `JUDGE=1`) replace the rigged
+keyword `caught`, and the `plain+report` / `byproxy-noaudit` ablation arms
+decompose the confounded treatment. What remains is the run itself: #1/#3/#5
+are properties of a powered, containerized, report-every-rep campaign at one α,
+not of the tooling. Nothing here is a result yet.
 
 **Least-supported benchmark-5 claims:** (a) "direction is consistent across
 tiers" — contradicted by the data file; (b) "solo sonnet is the rational

@@ -3,13 +3,16 @@
 Truth by proxy. Facts from explorers, intent from the user, judgment kept
 where it's paid for.
 
-A contract-driven guard layer for coding agents in Claude Code: the
-orchestrator reads the hard code itself, escalates understanding gaps to
-the user, and authors falsifiable contracts; cheap read-only explorers
-gather every fact and re-run every check; a tool-less peer red-teams the
-contract before code exists; a Sonnet builder ships the volume; a cold
-peer auditor judges the landed diff. Nothing that matters is assumed —
-every kind of truth is fetched from where it lives.
+A methodology for coding agents in Claude Code, shaped by seven measured
+benchmarks — most of which refuted its own earlier designs. The current
+measured frontier is **fable-lean**: the top-tier model works hands-on and
+pays only for judgment, while cheap haiku explorers absorb all bulk
+context (builds, tests, sweeps, reruns) in throwaway sessions, and
+lens-driven hunts demand quoted mechanisms instead of trusted claims.
+Confirmed on the seeded-defect benchmark (n=4): quality at-or-above a
+plain top-tier run in every rep, at 36% of its cost and 63% of its wall
+time. The earlier contract/critic/gate/auditor guard layer (the v6 skill)
+remains in the repo as the measured-and-refuted ancestor.
 
 ## Why this shape
 
@@ -68,18 +71,36 @@ orchestrator alone.
 Every report still carries `VERBATIM` (machine output quoted, never
 paraphrased) and a mandatory `UNKNOWN` — no agent in the loop decides
 silently what information survives, and confident silence is treated as
-the failure mode. v4's bet is stated in the skill and not yet measured:
-contract + red-team + cold peer audit should recover the fix-rate v3's
-economy gave away, at a cost still below a solo run of the
-orchestrator's own tier. Benchmark 6 exists to refute it.
+the failure mode.
+
+That was the v4 pitch. Benchmarks 6 and 7 then did to it what 4 and 5 did
+to v1–v3. Benchmark 6 measured v4/v5 at parity with plain fable at best,
+and found ~80% of every run's cost is **context traffic** — the resident
+premium context re-read every turn — not thinking. Benchmark 7 refuted the
+obvious fix twice (a sonnet control plane capped at 3/6 with regressions,
+split or merged — the judging tier is not a tuning knob), retired the
+orchestrator/builder split at same tier (measured pure waste: −38% cost,
+quality unchanged), and landed on what actually works:
+
+**fable-lean.** No contracts, no critic, no gate, no auditor. The top-tier
+model reads the decisive files once, designs, edits, and writes tests
+itself — and delegates every bulk operation (builds, tests, sweeps,
+verification reruns) to throwaway haiku explorers whose reports come back
+capped. Discovery is delegated too: lensed hunts that must return **quoted
+mechanisms, not claims** — the lock acquisition inside the entrypoint's
+own body, the scope argument at the fan-out call site, a wake predicate
+that can actually be false, nothing cleared before its write is confirmed
+— because every measured miss was a trusted-claim failure. Confirmed fixes
+land before close (fix-now, never disclosure-as-substitute), and an
+explorer rerun, not the leader's word, is the record.
 
 ## The record
 
 The data that forced this shape. Benchmarks 1–4 were generated at commit
 [`8f7ed5c`](../../tree/8f7ed5ca7fdd4f966138e6e8d92cbb9a0b57ebd1) under the
-earlier orchestrated architecture; benchmark 5 tested the v3 guard layer.
-v4 is unmeasured until benchmark 6 runs.
-Full reports with every bill in [`benchmarks/`](benchmarks/).
+earlier orchestrated architecture; benchmark 5 tested the v3 guard layer;
+6 measured v4/v5; 7 refuted the sonnet control plane and confirmed
+fable-lean. Full reports with every bill in [`benchmarks/`](benchmarks/).
 
 | bench | task | result |
 |---|---|---|
@@ -88,6 +109,8 @@ Full reports with every bill in [`benchmarks/`](benchmarks/).
 | 3 (headless, n=3/arm) | L: chunked uploads | cost tie vs solo opus; orchestrated runs ship self-auditing reports |
 | 4 (headless grid) | L: public-API rewrite | **solo sonnet dominates all arms ($2.44)**; cost thesis refuted |
 | 5 (headless, n=5/arm) | quality: seeded-defect todo app | **guard layer ~41% cheaper, no fix-rate or disclosure gain**; quality thesis refuted too |
+| 6 (headless) | same task, fable tiers | v4/v5 parity with plain fable at best; ~80% of cost is context traffic; hands-off holds mechanically but relocates cost, doesn't cut it |
+| 7 (headless, n=4 confirm) | same task | **sonnet control plane refuted twice (3/6 + regressions, split or merged); split retired (−38% cost, no quality change); fable-lean confirmed: ≥ plain-fable quality at 36% cost, race-clean, 0 regressions every rep** |
 
 Benchmarks 1–4 couldn't discriminate on quality — every arm completed, so
 only cost and latency separated them, and the guards' value showed up only
@@ -112,15 +135,15 @@ scoring that never trusts a run's self-report (it caught an agent
 reporting green on a broken test build, and its own scoring bug).
 
 ```sh
-./run.sh tasks/p24-broadcast solo --reps 3
-./run.sh tasks/p24-broadcast byproxy --reps 3
+CONTAINER=1 JUDGE=1 ./run.sh tasks/vialite-todo fable-lean --reps 3
+CONTAINER=1 JUDGE=1 ./run.sh tasks/vialite-todo plain --reps 3
 ```
 
 ## What's in this repo
 
 ```
 .claude/
-  skills/byproxy/SKILL.md   # the v4 skill (workflow, contract format, gate taxonomy, protocol)
+  skills/byproxy/SKILL.md   # the v6 skill (ceremony workflow — measured & refuted; kept as the ancestor)
   agents/
     byproxy-explorer.md     # haiku · read-only breadth: recon, checks, exit-check re-runs
     byproxy-critic.md       # same-tier · tool-less contract red-team

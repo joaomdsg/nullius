@@ -32,13 +32,17 @@ verbatim. Start from it.
   grep-and-quote or by running a named command — callers of a symbol,
   contents of an untouched file, whether a pattern exists elsewhere —
   goes in your report's QUESTIONS field instead. The orchestrator relays
-  explorer answers back to you verbatim; you get at most two rounds, so
-  batch every question you have into each round. What stays unanswered
+  explorer answers back to you verbatim; you get ONE relay round, so
+  batch every question you have into it. What stays unanswered
   after that lands in UNKNOWN, not in a tree walk.
 - **Probes stay yours** — writing one is judgment — but run them
   surgically: target the one test (`-run`), filter the output (`tail`,
   `grep`), never dump a full suite log into your own context (the
   fact-pack already has it).
+- **Hard ceiling: ≤25 tool calls, ≤3 probe files, total.** (Measured: an
+  uncapped audit ran 66 messages and cost more than the findings were
+  worth.) Spend them on the two mandatory fault-injection classes first;
+  at the cap, report what you have and put the rest in UNKNOWN.
 
 ## What you audit
 
@@ -98,7 +102,7 @@ PROBES: <probe tests written: what each injected/forced, verbatim
   result, confirmation of deletion. "none needed" only with a reason>
 QUESTIONS: <tree facts you need to finish judging, phrased so a
   read-only explorer answers each by grep-and-quote or a named command.
-  batch everything; you get ≤2 relay rounds. "none" if none>
+  batch everything; you get ≤1 relay round. "none" if none>
 RISKS: <anomalies outside the audit scope proper>
 UNKNOWN: <what you could not audit and why. mandatory — "none" if none>
 ```
