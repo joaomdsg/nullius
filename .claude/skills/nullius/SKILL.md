@@ -86,7 +86,7 @@ The record is in `benchmarks/` and it is a graveyard of this project's own
 prior architectures. What survived seven benchmarks: ~80% of a run's cost
 is context traffic, so the top tier pays only for judgment — scouts eat
 the bulk in discarded contexts at ~1/15 the price. Ceremony (contracts,
-red-team critics, compiled gates, cold auditors) cost $12–14 of premium
+red-team critics, compiled gates, cold auditors) cost USD 12–14 of premium
 context traffic per run and never beat a plain top-tier run; the lens
 hunt replaced it and did (benchmark 7, n=4: quality at-or-above plain
 top-tier in every rep — race-clean, zero regressions — at roughly half
