@@ -64,6 +64,16 @@ and writes `blind_disclosure` onto the row. This is the trusted disclosure
 metric; `score.sh`'s keyword `caught` is the lower-trust secondary. Judge
 tier is `JUDGE_MODEL` (default `claude-sonnet-5`).
 
+**Blind SWE-quality judge.** `quality-judge.sh <task-dir> <diff-file>` scores
+one rep's diff 0-10 on root-causing, tests, minimality, idiom, and overall —
+blind by construction: it sees the task prompt and the diff only, never the
+arm label and never the run report (the report format alone would unblind
+it). It judges how well a run did what it did; completeness against seeded
+defects stays `score.sh`'s job — the two are complementary. Run it ad hoc
+over `results/*.diff` and collect rows into `results/quality.jsonl`; tier is
+`QUALITY_JUDGE_MODEL` (default `claude-sonnet-5`). Caveat: single-vote
+scores; distrust differences smaller than ~2 points.
+
 ## Usage
 
 ```sh
@@ -90,15 +100,42 @@ export NULLIUS_ANTHROPIC_API_KEY=sk-ant-api03-...   # namespaced; won't hijack
 CONTAINER=1 ./run.sh tasks/vialite-todo plain --reps 5
 ```
 
-Auth is passed by reference (`-e ANTHROPIC_API_KEY`) — bills to that key's
-account, not the host OAuth login. The harness reads `NULLIUS_ANTHROPIC_API_KEY`
-(preferred, so a bare `ANTHROPIC_API_KEY` never has to sit in your shell and
-override your own Claude Code login; the legacy `BYPROXY_ANTHROPIC_API_KEY`
-is still honored) and maps it to the container's
-`ANTHROPIC_API_KEY`; an explicit `ANTHROPIC_API_KEY` still takes precedence.
-The credential must be a Messages-API key (`sk-ant-api03-`); an OAuth token
-(`sk-ant-oat01-`, from `claude setup-token`) is rejected — run.sh preflights
-for this and fails fast. The container runs as the invoking
+Auth is passed by reference — exactly one credential env var enters the
+container, never inlined. Two credential kinds are accepted, each preferred in
+its namespaced form so a bare key never has to sit in your shell and override
+your own interactive Claude Code login:
+
+- **API key** (`sk-ant-api03-`, console.anthropic.com):
+  `NULLIUS_ANTHROPIC_API_KEY` (legacy `BYPROXY_ANTHROPIC_API_KEY` honored)
+  maps to the container's `ANTHROPIC_API_KEY` and bills to that key's account.
+- **OAuth token** (`sk-ant-oat01-`, from `claude setup-token`):
+  `NULLIUS_CLAUDE_CODE_OAUTH_TOKEN` (or `CLAUDE_CODE_OAUTH_TOKEN`) maps to the
+  container's `CLAUDE_CODE_OAUTH_TOKEN` and bills to the subscription. An
+  OAuth token found in the API-key slot is routed here rather than rejected.
+  Caveat: `cost_usd` comes from the CLI's result event either way, but keep a
+  campaign on one auth mode so cost comparisons stay apples-to-apples.
+
+  Prefer the **file reference** so the token never sits in an environment
+  variable or shell history — only a path does (safe to export from your
+  shell profile):
+
+  ```sh
+  install -m 700 -d ~/.config/nullius
+  claude setup-token          # browser flow; shown once, in YOUR terminal
+  cat > ~/.config/nullius/oauth-token   # paste the token, Enter, Ctrl-D
+  chmod 600 ~/.config/nullius/oauth-token
+  export NULLIUS_CLAUDE_CODE_OAUTH_TOKEN_FILE=~/.config/nullius/oauth-token
+  ```
+
+  run.sh and judge.sh read the file at runtime; a direct token variable, if
+  set, wins over the file.
+
+An explicit `ANTHROPIC_API_KEY` holding a real API key still takes precedence
+over everything else. run.sh preflights the credential and fails fast — before
+the container spins up — when none is usable; `test-auth-wiring.sh` covers the
+whole resolution against a shimmed docker (no network, no billing). The same
+resolution applies to the JUDGE=1 host-side judge (judge.sh), which otherwise
+falls back to the host `claude` login. The container runs as the invoking
 `uid:gid` with a throwaway `$HOME`, so files it writes into the worktree
 stay host-owned and scoring/cleanup are unchanged. Networking is the
 default bridge (outbound-only); the container is otherwise isolated.
@@ -123,9 +160,8 @@ race-forcing exit checks.
 ## Caveats that remain
 
 - Nondeterminism: report distributions, not single reps (≥3 reps/arm).
-- Pass/fail scoring only; code-quality comparison needs a separate blind
-  judge pass over the diffs (planned: third headless run with an audit
-  prompt that doesn't know which arm produced which diff).
+- Code-quality comparison is the blind `quality-judge.sh` pass (see above);
+  it is single-vote per diff, so treat small score differences as noise.
 - Go-specific scorer; generalize per task type as needed.
 - Permissions: runs use `--permission-mode auto` (the classifier gates
   headless runs too) plus an allowlist for the routine loop (file tools,

@@ -11,8 +11,11 @@
 #   judge.sh <report-file> <diff-file> <defects.json>
 #
 # Env: JUDGE_MODEL (default claude-sonnet-5) picks the judge tier. Auth is the
-# host `claude` login, or ANTHROPIC_API_KEY/NULLIUS_ANTHROPIC_API_KEY (legacy
-# BYPROXY_ANTHROPIC_API_KEY honored) if set.
+# host `claude` login, or — if set — ANTHROPIC_API_KEY/NULLIUS_ANTHROPIC_API_KEY
+# (legacy BYPROXY_ANTHROPIC_API_KEY honored) for API billing, or
+# CLAUDE_CODE_OAUTH_TOKEN/NULLIUS_CLAUDE_CODE_OAUTH_TOKEN (from
+# `claude setup-token`) for subscription auth. An OAuth token found in the
+# API-key slot is routed to the OAuth var, mirroring run.sh.
 #
 # Emits one JSON object on stdout:
 #   {judge_model, disclosures:[{id, disclosed, evidence}], disclosed_count}
@@ -22,7 +25,23 @@ set -uo pipefail
 REPORT="${1:?usage: judge.sh <report> <diff> <defects.json>}"
 DIFF="${2:?}"; DEFECTS="${3:?}"
 JUDGE_MODEL="${JUDGE_MODEL:-claude-sonnet-5}"
-: "${ANTHROPIC_API_KEY:=${NULLIUS_ANTHROPIC_API_KEY:-${BYPROXY_ANTHROPIC_API_KEY:-}}}"; export ANTHROPIC_API_KEY
+: "${ANTHROPIC_API_KEY:=${NULLIUS_ANTHROPIC_API_KEY:-${BYPROXY_ANTHROPIC_API_KEY:-}}}"
+: "${CLAUDE_CODE_OAUTH_TOKEN:=${NULLIUS_CLAUDE_CODE_OAUTH_TOKEN:-}}"
+# File reference (mirrors run.sh): read the token at runtime so only a path
+# ever sits in the environment. Unreadable file → fall back to host login.
+if [[ -z "$CLAUDE_CODE_OAUTH_TOKEN" && -r "${NULLIUS_CLAUDE_CODE_OAUTH_TOKEN_FILE:-}" ]]; then
+  CLAUDE_CODE_OAUTH_TOKEN="$(< "$NULLIUS_CLAUDE_CODE_OAUTH_TOKEN_FILE")"
+fi
+# An OAuth token (sk-ant-oat01-) is not a Messages-API key: the CLI reads it
+# from CLAUDE_CODE_OAUTH_TOKEN, so route it there instead of failing auth.
+if [[ "$ANTHROPIC_API_KEY" == sk-ant-oat01-* ]]; then
+  CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-$ANTHROPIC_API_KEY}"
+  ANTHROPIC_API_KEY=""
+fi
+# Export only non-empty credentials: an exported-but-empty var may shadow the
+# host `claude` login in the CLI's env-first credential precedence.
+if [[ -n "$ANTHROPIC_API_KEY" ]]; then export ANTHROPIC_API_KEY; else unset ANTHROPIC_API_KEY; fi
+if [[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]]; then export CLAUDE_CODE_OAUTH_TOKEN; else unset CLAUDE_CODE_OAUTH_TOKEN; fi
 
 emit_err() { jq -n --arg m "$JUDGE_MODEL" --arg e "$1" --arg raw "${2:-}" \
   '{judge_model:$m, error:$e, raw:$raw}'; exit 0; }

@@ -223,35 +223,56 @@ $PROMPT"
   # stream-json rejects a positional prompt; feed it via stdin instead.
   # CONTAINER=1 runs the claude invocation inside the pinned sandbox image
   # (see Dockerfile): same CLI + Go toolchain regardless of host, so the only
-  # variable across a campaign is the arm. Auth is passed by reference via
-  # -e ANTHROPIC_API_KEY (never inlined). The container runs as the invoking
+  # variable across a campaign is the arm. Auth is passed by reference via a
+  # single -e env flag (never inlined; API key or OAuth token — see the
+  # resolution below). The container runs as the invoking
   # uid:gid with a writable $HOME bind-mount, so files it writes into the
   # worktree stay host-owned and scoring/cleanup work unchanged. Default
   # bridge networking = outbound-only; the container is otherwise isolated.
   if [[ "${CONTAINER:-0}" == "1" ]]; then
-    # Auth source: prefer a byproxy-namespaced key so the harness never needs a
-    # bare ANTHROPIC_API_KEY in your shell (which would hijack your interactive
-    # Claude Code session). BYPROXY_ANTHROPIC_API_KEY, if set, maps to the
-    # container's ANTHROPIC_API_KEY; an explicit ANTHROPIC_API_KEY still wins.
-    export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-${NULLIUS_ANTHROPIC_API_KEY:-${BYPROXY_ANTHROPIC_API_KEY:-}}}"
-    if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-      echo "CONTAINER=1 requires ANTHROPIC_API_KEY or NULLIUS_ANTHROPIC_API_KEY in the environment" >&2
-      exit 3
+    # Auth source: prefer a namespaced credential so the harness never needs a
+    # bare key in your shell (which would hijack your interactive Claude Code
+    # session). Two credential kinds, each mapped to the env var the container
+    # CLI reads; exactly ONE is passed in, and an explicit ANTHROPIC_API_KEY
+    # holding a real API key still wins:
+    #   sk-ant-api03- console API key -> ANTHROPIC_API_KEY       (API billing)
+    #   sk-ant-oat01- OAuth token     -> CLAUDE_CODE_OAUTH_TOKEN (subscription,
+    #                                    issued by `claude setup-token`)
+    ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-${NULLIUS_ANTHROPIC_API_KEY:-${BYPROXY_ANTHROPIC_API_KEY:-}}}"
+    CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-${NULLIUS_CLAUDE_CODE_OAUTH_TOKEN:-}}"
+    # File reference: the token itself never has to sit in any environment or
+    # shell history — point NULLIUS_CLAUDE_CODE_OAUTH_TOKEN_FILE at a
+    # chmod-600 file (written once from `claude setup-token`) and it is read
+    # here at runtime. A direct token variable, if set, wins.
+    if [[ -z "$CLAUDE_CODE_OAUTH_TOKEN" && -n "${NULLIUS_CLAUDE_CODE_OAUTH_TOKEN_FILE:-}" ]]; then
+      if [[ ! -r "$NULLIUS_CLAUDE_CODE_OAUTH_TOKEN_FILE" ]]; then
+        echo "NULLIUS_CLAUDE_CODE_OAUTH_TOKEN_FILE is set but not readable: $NULLIUS_CLAUDE_CODE_OAUTH_TOKEN_FILE" >&2
+        exit 3
+      fi
+      CLAUDE_CODE_OAUTH_TOKEN="$(< "$NULLIUS_CLAUDE_CODE_OAUTH_TOKEN_FILE")"
     fi
-    # Preflight the credential TYPE. The Messages API path (-e ANTHROPIC_API_KEY)
-    # needs a console API key (sk-ant-api03-); an OAuth token (sk-ant-oat01-,
-    # what `claude setup-token`/login issues) is rejected as "Invalid API key"
-    # only AFTER the container spins up and bills a worktree. Fail fast instead.
+    # An OAuth token in the API-key slot would be rejected as "Invalid API key"
+    # only AFTER the container spins up and bills a worktree — route it to the
+    # slot the CLI actually reads OAuth tokens from instead of failing.
     if [[ "$ANTHROPIC_API_KEY" == sk-ant-oat01-* ]]; then
-      echo "ANTHROPIC_API_KEY holds an OAuth token (sk-ant-oat01-), not an API key." >&2
-      echo "The Messages API needs a sk-ant-api03- key (console.anthropic.com)." >&2
-      echo "For subscription auth instead, set CLAUDE_CODE_OAUTH_TOKEN and wire it here." >&2
+      CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-$ANTHROPIC_API_KEY}"
+      ANTHROPIC_API_KEY=""
+      echo "note: ANTHROPIC_API_KEY held an OAuth token; using it as CLAUDE_CODE_OAUTH_TOKEN (subscription auth)" >&2
+    fi
+    if [[ -n "$ANTHROPIC_API_KEY" ]]; then
+      export ANTHROPIC_API_KEY; AUTH_ENV=(-e ANTHROPIC_API_KEY)
+    elif [[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]]; then
+      export CLAUDE_CODE_OAUTH_TOKEN; AUTH_ENV=(-e CLAUDE_CODE_OAUTH_TOKEN)
+    else
+      echo "CONTAINER=1 requires a credential in the environment:" >&2
+      echo "  API key (sk-ant-api03-): ANTHROPIC_API_KEY or NULLIUS_ANTHROPIC_API_KEY" >&2
+      echo "  OAuth (claude setup-token): CLAUDE_CODE_OAUTH_TOKEN or NULLIUS_CLAUDE_CODE_OAUTH_TOKEN" >&2
       exit 3
     fi
     CHOME="$WTPARENT/chome"; mkdir -p "$CHOME"
     printf '%s' "$RUN_PROMPT" | timeout "$TIMEOUT_S" docker run --rm -i \
       --user "$(id -u):$(id -g)" \
-      -e ANTHROPIC_API_KEY -e HOME=/home/agent \
+      "${AUTH_ENV[@]}" -e HOME=/home/agent \
       -e GOCACHE=/home/agent/.cache/go-build -e GOPATH=/home/agent/go \
       -v "$WT:/work" -w /work \
       -v "$CHOME:/home/agent" \
@@ -296,9 +317,18 @@ $PROMPT"
   fi
   jq -e . >/dev/null 2>&1 <<<"$SCORE" \
     || SCORE='{"error":"score.sh emitted non-JSON — see .score-err","complete":false}'
-  git -C "$WT" diff > "$RAW.diff" 2>/dev/null || true
-  DIFFSTAT="$(git -C "$WT" diff --stat 2>/dev/null | tail -1 || true)"
-  UNTRACKED="$(git -C "$WT" ls-files --others --exclude-standard 2>/dev/null | grep -v '^\.claude/' | grep -c . || true)"
+  # Capture the agent's FULL change set, INCLUDING newly-created files (e.g. a
+  # new *_test.go). A plain `git diff` omits untracked files — which silently
+  # hid every new test file from the diff-based judges (quality-judge.sh and the
+  # blind-disclosure judge.sh both read this .diff), scoring the "tests"
+  # dimension ~1 for EVERY arm no matter what was actually written. Stage
+  # everything (the worktree is discarded next, so mutating its index is free),
+  # then diff/count with the harness-injected .claude/ excluded — the agents and
+  # skills an arm copied in are not the run's own work.
+  git -C "$WT" add -A >/dev/null 2>&1 || true
+  git -C "$WT" diff --cached -- . ':(exclude).claude' > "$RAW.diff" 2>/dev/null || true
+  DIFFSTAT="$(git -C "$WT" diff --cached --stat -- . ':(exclude).claude' 2>/dev/null | tail -1 || true)"
+  UNTRACKED="$(git -C "$WT" diff --cached --diff-filter=A --name-only -- . ':(exclude).claude' 2>/dev/null | grep -c . || true)"
 
   # Blind disclosure judge (see harness/README.md): opt-in via JUDGE=1
   # so default/cheap runs skip the extra LLM call. Judges report+diff blind to

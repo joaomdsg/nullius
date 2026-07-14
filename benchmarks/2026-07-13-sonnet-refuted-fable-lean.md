@@ -180,13 +180,36 @@ Raw rows: `harness/results/results.jsonl` (arms `byproxy-v6-sonnet-high`,
 tasks/vialite-todo fable-lean --reps 3` (config pinned in run.sh's
 `fable-lean` arm; LEAN_MODEL/LEAN_EFFORT to override).
 
-**Postscript (same day):** a post-gcc baseline rerun added one valid
-plain-fable rep — $8.49, 4/6, race-dirty — before the API credit pool
-exhausted (two further reps died on "credit balance too low" and were
-scrubbed). The baseline is therefore n=2 and high-variance ($8.49–$17.09,
-4–5/6); against its mean, fable-lean is ~49% of cost at clearly better
-quality (5.75 vs 4.5 mean fixed, 4/4 vs 1/2 race-clean). The full n=3
-post-gcc baseline remains owed. Separately, fable-lean was promoted to the
-project methodology and renamed **nullius** (`.claude/skills/nullius/`);
-the ceremony moved to `archive/byproxy-v6/`, and the harness gained a
-`nullius` arm name with `fable-lean` kept as the alias used above.
+**Postscript — post-gcc baseline completed (2026-07-14).** The owed n=3
+plain-fable baseline on the repaired (gcc/`-race`) image is now in:
+
+| rep | cost | fixed | race | blind | hidden |
+|---|---|---|---|---|---|
+| 1 | $8.49 | 4/6 | dirty | 4 | 286/287 |
+| 2 | $13.17 | 4/6 | clean | 4 | 284/287 |
+| 3 | $15.42 | 5/6 | dirty | 5 | 287/287 |
+| **mean** | **$12.36** | **4.33** | 1/3 | 4.33 | |
+
+This **replaces the pre-gcc $17.09/n=1 figure** as the comparison baseline
+(that run could not execute `-race` in-sandbox). Against it, **fable-lean
+is 50.4% of baseline cost** ($6.23 vs $12.36) at strictly better quality:
+5.75 vs 4.33 mean fixed, race-clean 4/4 vs 1/3, zero regressions across
+all reps. Threat #2 (baseline asymmetry) is retired; the honest frontier
+is **half of plain fable, confirmed** — not the ⅓ the pre-gcc number
+suggested. Misses are scattered rather than a single recurring defect:
+across the three reps, `statesess-cross-session-leak` and
+`action-not-serialized` were each missed twice, `sse-premature-clear`
+once; cas/subscription/ttl were fixed every rep. Two data caveats: a
+fourth rep was scrubbed (exited non-zero, smoke check failed, and the
+blind judge hit the monthly spend limit mid-run); rep 2 here is a clean
+re-run that **replaced** an original that billed $0.99 of an anomalous
+opus subagent dispatch (the plain arm should run fable-solo) — the
+replacement is fable-solo with zero dispatches, and the swap lowered mean
+fixed from 4.67 to 4.33. This confirmed NEXT.md's preregistered experiment
+#1 on all three headline axes (predicted mean $11–15, fix 4–5/6, ratio
+40–55%).
+
+Separately, fable-lean was promoted to the project methodology and renamed
+**nullius** (`.claude/skills/nullius/`); the ceremony moved to
+`archive/byproxy-v6/`, and the harness gained a `nullius` arm name with
+`fable-lean` kept as the alias used above.

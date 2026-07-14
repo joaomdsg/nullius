@@ -1,24 +1,28 @@
 # Open experiments — preregistered
 
 Predictions written BEFORE the runs, so the runs can embarrass them.
-Each entry: motivation · prediction · command. Blocked on: API credit
-top-up (the pool exhausted mid-baseline on 2026-07-13).
+Each entry: motivation · prediction · command.
 
-## 1. Post-gcc plain-fable baseline (owed)
+## 1. Post-gcc plain-fable baseline — RESOLVED 2026-07-14 ✓
 
-Benchmark 7's headline ratio rests on an n=2, high-variance baseline
-($8.49–$17.09, 4–5/6), one rep of which predates the gcc/race repair.
-Finish n=3 on the repaired image.
+Benchmark 7's headline ratio rested on an n=2, high-variance baseline
+($8.49–$17.09, 4–5/6), one rep of which predated the gcc/race repair.
+Finished n=3 on the repaired image (arm `plain-fable-5-low[-postgcc]`).
 
-**Prediction:** mean lands $11–15; fix-rate 4–5/6 with the sse fault-path
-defect missed in most reps; nullius's honest ratio settles at 40–55% of
-baseline cost at superior quality (race hygiene and regressions staying
-the separators).
+**Result (adopted as the baseline):** mean **$12.36** ($8.49 / $13.17 /
+$15.42), fix-rate **4.33/6** (4 / 4 / 5), 1/3 race-clean, blind 4.33/6,
+wall ~14 min. nullius $6.23/5.75 = **50.4% of baseline cost at strictly
+better quality** — fix-rate (5.75 vs 4.33) and race hygiene (4/4 vs 1/3)
+the separators.
 
-```sh
-CONTAINER=1 JUDGE=1 PLAIN_MODEL=claude-fable-5 PLAIN_EFFORT=low \
-  LABEL=plain-fable-5-low-postgcc ./run.sh tasks/vialite-todo plain --reps 2
-```
+Prediction confirmed on all three headline axes (predicted $11–15 →
+$12.36; 4–5/6 → 4.33; 40–55% → 50%). Sub-prediction wrong: no single
+recurring miss — statesess & action missed in 2/3 reps each, sse in 1/3;
+cas/subscription/ttl fixed every rep. Caveats: a 4th rep was scrubbed
+(exit 1, smoke failed, judge hit the monthly spend limit); the original
+07-14 rep1 ($13.44/5) billed $0.99 of an anomalous opus subagent dispatch
+(plain arm should be fable-solo) and was replaced by a clean fable-solo
+re-run ($13.17/4, 0 subagents) — the swap lowered mean fixed 4.67→4.33.
 
 ## 2. Benchmark 8 — greenfield with a hidden property oracle
 
