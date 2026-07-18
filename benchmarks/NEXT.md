@@ -24,7 +24,21 @@ cas/subscription/ttl fixed every rep. Caveats: a 4th rep was scrubbed
 (plain arm should be fable-solo) and was replaced by a clean fable-solo
 re-run ($13.17/4, 0 subagents) — the swap lowered mean fixed 4.67→4.33.
 
-## 2. Benchmark 8 — greenfield with a hidden property oracle
+## 2. Benchmark 8 — greenfield with a hidden property oracle — RESOLVED 2026-07-17 ✓
+
+Built as `tasks/greenfield-ledger/` (lens-hostile double-entry ledger,
+29 hidden conformance tests, 12-variant red matrix, suite frozen at
+sha256 f0d2bcaf… before any rep) and run against the cc-nullius plugin
+arm. **Result (n=1 each):** plain fable-low $3.98 / 29/29 / 25 turns;
+plugin full-process $7.08 / 29/29 / 57 turns (pure tax, +78%); plugin
+with terrain gate + turn economy **$4.54 / 29/29 / 12 turns** — leader
+cost $3.67 was below plain's total. Prediction half-right: quality edge
+vanished as forecast, but the plugin was ~1.8× MORE expensive until the
+gate, not 1.5× cheaper — the read-avoidance lever being moot was the
+whole story, and ceremony had to learn to stand down. Task README has
+the full preregistration + dispositions.
+
+## 2b. Benchmark 8 — original sketch (kept for the record)
 
 Everything measured so far is defect archaeology. Greenfield flips the
 lenses from hunting to design (same taxonomy, opposite tense) and its
@@ -80,3 +94,31 @@ defect set; the method (each miss → a new quoted-mechanism lens)
 converges within 2–3 iterations as it did on vialite (3/6 → 6/6 in four
 reps). If convergence needs per-task lens tuning every time, the honest
 claim shrinks to "a lens-derivation method", not "a lens set".
+
+## 5. Prevention vs compaction — the missing industry experiment
+
+The 2026-07-17 research sweep found every lab picks a side without the
+A/B: Manus/Cognition engineer to PREVENT context growth (KV-cache
+discipline, single-threaded writes); Claude Code and most harnesses let
+context bloat and COMPACT near the ceiling (summarize + continue).
+Nobody publishes same-task, same-model, prevention-vs-compaction. We
+have both arms nearly free: cc-nullius IS prevention; a plain run driven
+past its context ceiling is compaction.
+
+**Design:** vialite-todo (the defect oracle discriminates; greenfield
+ceilinged). Force the compaction arm through at least one auto-compact
+by inflating resident context honestly — the task prompt requires
+reading the full repo before acting (no artificial padding; the bloat is
+the natural cost of not delegating reads). Same model/effort both arms
+(fable-5 low). Measure: defects fixed, regression count, cost, turns,
+number of compactions, and WHERE the misses fall relative to the
+compaction boundary.
+
+**Prediction (n=2/arm):** the compaction arm loses exactly the
+checklist-tail defects — items established before the compact and never
+re-recited after it (sse-premature-clear or statesess the likely
+casualties, matching the rep-3 recency failure); prevention wins quality
+5.5–6/6 vs 4–5/6 at ≤60% of the compaction arm's cost. If compaction
+holds quality, the honest conclusion is that summarization preserves
+task-critical state better than the attention thesis allows — and the
+diet's justification narrows back to dollars.

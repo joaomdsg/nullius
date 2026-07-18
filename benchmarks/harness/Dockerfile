@@ -26,7 +26,7 @@ ENV GOTOOLCHAIN=local
 ENV CGO_ENABLED=1
 
 # Claude Code CLI, pinned to the host version used for the measured campaign.
-ARG CLAUDE_VERSION=2.1.206
+ARG CLAUDE_VERSION=2.1.212
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_VERSION}
 
 # The container runs as the invoking uid:gid (see run.sh --user) so files it

@@ -57,13 +57,16 @@ PLAIN_EFFORT="${PLAIN_EFFORT:-${SOLO_EFFORT:-}}"   # empty = harness default eff
 #   pure waste at same tier — benchmark 7).
 case "$ARM" in
   nullius)           LABEL="${LABEL:-nullius-${LEAN_MODEL#claude-}-$LEAN_EFFORT}";;
+  nullius-rev1)      LABEL="${LABEL:-nullius-rev1-${LEAN_MODEL#claude-}-$LEAN_EFFORT}";;
+  nullius-rev2)      LABEL="${LABEL:-nullius-rev2-${LEAN_MODEL#claude-}-$LEAN_EFFORT}";;
+  cc-nullius)        LABEL="${LABEL:-cc-nullius-${LEAN_MODEL#claude-}-$LEAN_EFFORT}";;
   fable-lean)        LABEL="${LABEL:-fable-lean-${LEAN_MODEL#claude-}-$LEAN_EFFORT}";;
   byproxy)           LABEL="${LABEL:-byproxy-${ORCH_MODEL#claude-}-$ORCH_EFFORT}";;
   byproxy-noaudit)   LABEL="${LABEL:-byproxy-noaudit-${ORCH_MODEL#claude-}-$ORCH_EFFORT}";;
   byproxy-nobuilder) LABEL="${LABEL:-byproxy-nobuilder-${ORCH_MODEL#claude-}-$ORCH_EFFORT}";;
   plain)             LABEL="${LABEL:-plain-${PLAIN_MODEL#claude-}${PLAIN_EFFORT:+-$PLAIN_EFFORT}}";;
   plain+report)      LABEL="${LABEL:-plain-report-${PLAIN_MODEL#claude-}${PLAIN_EFFORT:+-$PLAIN_EFFORT}}";;
-  *) echo "arm must be nullius|fable-lean|byproxy|byproxy-noaudit|byproxy-nobuilder|plain|plain+report" >&2; exit 2;;
+  *) echo "arm must be nullius|nullius-rev1|nullius-rev2|cc-nullius|fable-lean|byproxy|byproxy-noaudit|byproxy-nobuilder|plain|plain+report" >&2; exit 2;;
 esac
 
 # Symmetric disclosure (threat #4). Every arm is asked to disclose, so `caught`
@@ -204,6 +207,68 @@ $PROMPT"
     CLAUDE_ARGS+=(--model "$LEAN_MODEL" --effort "$LEAN_EFFORT")
     CLAUDE_ARGS+=(--append-system-prompt "You are a senior engineer working this task HANDS-ON, under one hard operating constraint: your context window is the bill — every token that enters it is re-paid on every turn that follows, so you finish lean or you finish expensive. The diet governs CONTEXT, never scope: you do ALL the work the task demands, cheaply. Discipline, non-negotiable: (1) DELEGATE BULK: never run builds, tests, vet, or broad searches yourself, and never read whole files you are not about to edit — dispatch nullius-explorer subagents (Agent tool; cheap throwaway contexts) for every such job, BATCHED in parallel when independent; they return capped reports and their runs are your trusted record. (2) HUNT WIDE, THROUGH EXPLORERS: delegation applies to discovery too. Early, batch explorers to sweep EVERY corner of the mandate's code with these lenses, each answered with QUOTED MECHANISMS, never claims: for every shared mutable state AND every mutating entrypoint (handler, action, callback), quote the lock acquisition inside the entrypoint's OWN BODY — a mutex field, a doc comment, or a sibling function's lock is not serialization, and an entrypoint whose body takes no lock IS the finding; for every effect that must survive a fault (a write that can fail, a connection that can drop, a queue drained then re-sent), quote what preserves it — anything cleared before its write is confirmed IS the finding; for every per-session/per-scope state, quote the scope argument at the fan-out/broadcast call site — a nil or missing scope filter IS the finding; for every wake/notify predicate deciding WHO gets woken or re-rendered, quote the condition and check it can actually be false (an always-true predicate IS the finding) and that its reads are under the same lock as its writes; plus lost updates, lifecycle races, and error paths that swallow. Their FACTS name suspects; you read the decisive lines yourself and rule. Comments lie; only quoted code counts. (3) READ SURGICALLY, ONCE: read the few files you will edit yourself, one time; never re-read what you already hold; never re-verify what an explorer verified. (4) If you must run a command yourself, bound it: append '2>&1 | tail -n 20'. (5) BUILD YOURSELF: you design and write all code and tests directly — tests first for behavior you change or fix; then ONE explorer rerun of the decisive tests proves it (under -race for any concurrency claim — the race detector works in this environment), not repeated personal runs. (6) FIX EVERYTHING IN-MANDATE: under a fix-at-root mandate, a defect you have confirmed is FIXED test-first before you close — never merely disclosed. RISKS is for what you could not confirm or what is genuinely out of mandate, each with its reason; a confirmed in-mandate defect left as a disclosure is a failed run. (7) VERIFY CLAIMS BEFORE CLOSE: every serialization/isolation/fault-safety property your fixes or tests RELY on must be verified against quoted code, not comments or declarations; and for each test you wrote, name the code change that would make it fail — a test you cannot articulate a failure for is vacuous and proves nothing. (8) CLOSE: one explorer run of the full suite + go vet, then report. This is a headless run with no user available — never call AskUserQuestion; make the call, record it under ASSUMED. Spend your turns hunting and fixing, never re-verifying; aim to finish within ~35 of your own turns.")
     RUN_PROMPT="$PROMPT$FULL_RISKS"
+  elif [[ "$ARM" == "nullius-rev1" ]]; then
+    # Slim ablation of nullius (benchmark 9): same methodology, three levers
+    # aimed at the measured residual cost — leader cache re-reads scale as
+    # resident_context x turns. (a) trimmed prompt (~45% fewer methodology
+    # tokens resident every turn); (b) fan-in hunt: ONE batch of <=3
+    # explorers with <=25-line reports instead of an open-ended hunter
+    # fleet; (c) ranged reads + hard turn-batching pressure (~20 turns) and
+    # a BACKGROUNDED closing scout overlapped with report drafting.
+    mkdir -p "$WT/.claude/agents"
+    cp "$ROOT_DIR/.claude/agents/nullius-explorer.md" "$WT/.claude/agents/"
+    CLAUDE_ARGS+=(--model "$LEAN_MODEL" --effort "$LEAN_EFFORT")
+    CLAUDE_ARGS+=(--append-system-prompt "You are a senior engineer working this task HANDS-ON. Your context window is the bill: every token that enters it is re-paid on every later turn, and every TURN re-pays the whole context — so batch aggressively and finish in few turns (aim under ~20 of your own turns). The diet governs CONTEXT, never scope: you do ALL the work the task demands, cheaply. Rules, non-negotiable: (1) DELEGATE BULK: never run builds, tests, linters, or broad searches yourself — dispatch nullius-explorer subagents (Agent tool; cheap throwaway contexts) for every such job; their capped reports are your trusted record. (2) HUNT ONCE, WIDE: discovery is ONE parallel batch of AT MOST 3 explorers in your first turn, together sweeping every corner of the mandate. The standing question for every sweep: for each property the code RELIES on to be correct, quote the mechanism that enforces it — a comment, a name, a field, or a sibling function that enforces it elsewhere is NOT a mechanism, and a relied-on property with no quotable enforcement IS the finding. Apply it to whatever invariants the mandate's code actually has, e.g.: exclusive access to shared mutable state (quote the guard inside the mutating entrypoint's OWN body); effects that must survive a fault or retry (quote what preserves or replays them — anything discarded before its effect is confirmed IS the finding); data confined to a scope, tenant, session, or permission (quote the filter at the crossing point); resources that must be released or bounded (quote the release on EVERY path, including error paths); conditions deciding who is woken, retried, rendered, or skipped (quote the condition and check it can actually take both values); boundaries and edges (empty, zero, max, duplicate, concurrent, out-of-order); and error paths that swallow, mask, or half-apply. Cap each explorer's report at 25 lines: suspects as file:line plus the decisive quoted lines, zero narration. Comments lie; only quoted code counts — you read the decisive lines yourself and rule. (3) READ RANGED, ONCE: read only files you will edit, only ONCE, and only the decisive line ranges (use offset/limit) — never a whole file over ~150 lines, never re-read what you hold, never re-verify what an explorer verified. (4) Own commands bounded: append '2>&1 | tail -n 20'. (5) BUILD YOURSELF, BATCHED: design and write all code and tests directly — tests first for behavior you change; group independent edits into the SAME turn; then ONE explorer rerun of the decisive tests proves the whole batch (under the toolchain's race/sanitizer flags for any concurrency claim, when available), not per-edit runs. (6) FIX EVERYTHING IN-MANDATE: a defect you have confirmed is FIXED test-first before you close — never merely disclosed; RISKS is only for what you could not confirm or what is out of mandate, each with its reason. (7) VERIFY BEFORE CLOSE: every invariant your fixes or tests rely on must be backed by quoted code, not comments; for each test you wrote, name the code change that would make it fail. (8) CLOSE OVERLAPPED: immediately after your final edit, dispatch ONE explorer to run the full suite plus the project's static checks with run_in_background: true, draft your report while it runs, and finalize only with its verbatim output as the record — never self-reported green. This is a headless run with no user: never call AskUserQuestion; make the call and record it under ASSUMED.")
+    RUN_PROMPT="$PROMPT$FULL_RISKS"
+  elif [[ "$ARM" == "nullius-rev2" ]]; then
+    # rev2 = rev1 + fan-in hunt: hunters are UNCAPPED in number (6-10
+    # orthogonal sweeps) because their reports never enter the leader's
+    # context — each writes full findings to /tmp/nullius-findings/ and
+    # returns a one-line receipt; a sink explorer merges them into a
+    # deduplicated INDEX (mechanical, no ranking — judgment never
+    # delegates downtier); the leader ranged-reads only the decisive
+    # findings entries. Trades one serial hop of walltime for recall at
+    # near-constant leader residency. Findings live outside the worktree
+    # so the scored diff stays clean.
+    mkdir -p "$WT/.claude/agents"
+    cp "$ROOT_DIR/.claude/agents/nullius-explorer.md" "$WT/.claude/agents/"
+    cp "$ROOT_DIR/.claude/agents/nullius-hunter.md" "$WT/.claude/agents/"
+    # Host mode shares /tmp across reps; stale findings from a prior rep
+    # would contaminate the sink. Container mode gets a fresh /tmp anyway.
+    rm -rf /tmp/nullius-findings
+    CLAUDE_ARGS+=(--model "$LEAN_MODEL" --effort "$LEAN_EFFORT")
+    CLAUDE_ARGS+=(--append-system-prompt "You are a senior engineer working this task HANDS-ON. Your context window is the bill: every token that enters it is re-paid on every later turn, and every TURN re-pays the whole context — so batch aggressively and finish in few turns (aim under ~20 of your own turns). The diet governs CONTEXT, never scope: you do ALL the work the task demands, cheaply. Rules, non-negotiable: (1) DELEGATE BULK: never run builds, tests, linters, or broad searches yourself — dispatch nullius-explorer subagents (Agent tool; cheap throwaway contexts) for every such job; their capped reports are your trusted record. (2) HUNT ONCE, WIDE, FAN-IN: discovery is ONE parallel batch of 6-10 nullius-hunter subagents in your first turn, each assigned ONE orthogonal slice of the mandate (by subsystem, by entrypoint family, by invariant class — cover EVERY corner). Give each hunter the standing question: for each property the slice's code RELIES on to be correct, quote the mechanism that enforces it — a comment, a name, a field, or a sibling function that enforces it elsewhere is NOT a mechanism, and a relied-on property with no quotable enforcement IS the finding; sweep exclusive access to shared mutable state, effects that must survive a fault or retry, data confined to a scope/tenant/session, resources that must be released on EVERY path, conditions deciding who is woken/retried/rendered/skipped (can they take both values?), boundaries and edges (empty, zero, max, duplicate, concurrent, out-of-order), and error paths that swallow, mask, or half-apply. Each hunter writes its FULL findings to its own file under /tmp/nullius-findings/ and returns a one-line receipt. When all receipts are in, dispatch ONE nullius-explorer as SINK to read every file in /tmp/nullius-findings/ and return a deduplicated INDEX, ≤40 lines, one line per unique suspect: file:line — relied-on property — findings file holding the quote. The sink merges and dedupes ONLY — no ranking, no filtering, no verdicts; judgment is yours alone. You then Read the decisive findings entries (ranged) and the decisive source lines yourself, and rule. Comments lie; only quoted code counts. (3) READ RANGED, ONCE: read only files you will edit (plus findings entries the index flags), only ONCE, and only the decisive line ranges (use offset/limit) — never a whole source file over ~150 lines, never re-read what you hold, never re-verify what a scout verified. (4) Own commands bounded: append '2>&1 | tail -n 20'. (5) BUILD YOURSELF, BATCHED: design and write all code and tests directly — tests first for behavior you change; group independent edits into the SAME turn; then ONE explorer rerun of the decisive tests proves the whole batch (under the toolchain's race/sanitizer flags for any concurrency claim, when available), not per-edit runs. (6) FIX EVERYTHING IN-MANDATE: a defect you have confirmed is FIXED test-first before you close — never merely disclosed; RISKS is only for what you could not confirm or what is out of mandate, each with its reason. (7) VERIFY BEFORE CLOSE: every invariant your fixes or tests rely on must be backed by quoted code, not comments; for each test you wrote, name the code change that would make it fail. (8) CLOSE OVERLAPPED: immediately after your final edit, dispatch ONE explorer to run the full suite plus the project's static checks with run_in_background: true, draft your report while it runs, and finalize only with its verbatim output as the record — never self-reported green. This is a headless run with no user: never call AskUserQuestion; make the call and record it under ASSUMED.")
+    RUN_PROMPT="$PROMPT$FULL_RISKS"
+  elif [[ "$ARM" == "cc-nullius" ]]; then
+    # The cc-nullius PLUGIN arm: same doctrine as nullius, but the diet is
+    # MECHANIZED — a PreToolUse hook (diet governor) denies main-thread
+    # sweeps/whole-reads/heavy-Bash and steers to the plugin agents
+    # (scout/lens-hunter haiku; craftsman sonnet, last resort; no judge
+    # tier — the close-out record is a scout dispatch). Everything is
+    # copied INTO the worktree so container mode works unchanged; the hook
+    # is wired via --settings (project-settings hooks may be untrusted
+    # headless). The skill body is force-injected like the other arms —
+    # headless models ignore optional skills.
+    mkdir -p "$WT/.claude/hooks"
+    cp -r "$ROOT_DIR/cc-nullius/agents" "$WT/.claude/agents"
+    cp "$ROOT_DIR/cc-nullius/hooks/diet-governor.mjs" "$WT/.claude/hooks/"
+    cat > "$WT/.claude/nullius-settings.json" <<'EOF'
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Read|Grep|Glob|WebFetch|WebSearch|Bash|Edit|Write",
+        "hooks": [ { "type": "command",
+          "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/diet-governor.mjs\"" } ] }
+    ]
+  }
+}
+EOF
+    CLAUDE_ARGS+=(--model "$LEAN_MODEL" --effort "$LEAN_EFFORT" --settings ".claude/nullius-settings.json")
+    CC_SKILL_BODY="$(awk 'f{print} /^---[[:space:]]*$/{c++; if(c==2) f=1}' "$ROOT_DIR/cc-nullius/skills/nullius/SKILL.md")"
+    CLAUDE_ARGS+=(--append-system-prompt "You are the nullius starved orchestrator; the doctrine below governs this run. A diet-governor hook denies context-fattening calls on your thread — by design: obey each denial's steering reason, never fight it. Headless run, no user: never call AskUserQuestion; self-answer and record under ASSUMED as 'self-answered: Q -> A'. Do not end before the close-out scout record (full suite + linters + exported-surface diff) has run and you have ruled on it. The doctrine:
+
+$CC_SKILL_BODY")
+    RUN_PROMPT="$PROMPT$FULL_RISKS"
   elif [[ "$ARM" == "plain" ]]; then
     CLAUDE_ARGS+=(--model "$PLAIN_MODEL")
     [[ -n "$PLAIN_EFFORT" ]] && CLAUDE_ARGS+=(--effort "$PLAIN_EFFORT")
@@ -213,7 +278,7 @@ $PROMPT"
     [[ -n "$PLAIN_EFFORT" ]] && CLAUDE_ARGS+=(--effort "$PLAIN_EFFORT")
     RUN_PROMPT="$PROMPT$FULL_RISKS"
   else
-    echo "arm must be nullius|fable-lean|byproxy|byproxy-noaudit|byproxy-nobuilder|plain|plain+report" >&2; exit 2
+    echo "arm must be nullius|nullius-rev1|nullius-rev2|cc-nullius|fable-lean|byproxy|byproxy-noaudit|byproxy-nobuilder|plain|plain+report" >&2; exit 2
   fi
 
   echo "[$TASK_NAME/$ARM rep $rep] running headless (timeout ${TIMEOUT_S}s)..." >&2
@@ -295,7 +360,9 @@ $PROMPT"
   # Task calls, and specifically byproxy-explorer ones.
   DISPATCHES="$(jq -rc 'select(.type=="assistant") | .message.content[]? | select(.type=="tool_use" and (.name=="Task" or .name=="Agent")) | (.input.subagent_type // "unknown")' "$RAW" 2>/dev/null)"
   DISPATCH_N="$(printf '%s' "$DISPATCHES" | grep -c . || true)"
-  EXPLORER_N="$(printf '%s\n' "$DISPATCHES" | grep -cE 'byproxy-explorer|nullius-explorer' || true)"
+  EXPLORER_N="$(printf '%s\n' "$DISPATCHES" | grep -cE 'byproxy-explorer|nullius-explorer|nullius-scout|nullius-lens-hunter' || true)"
+  CRAFTSMAN_N="$(printf '%s\n' "$DISPATCHES" | grep -c 'nullius-craftsman' || true)"
+  CCJUDGE_N="$(printf '%s\n' "$DISPATCHES" | grep -c 'nullius-judge' || true)"
   CRITIC_N="$(printf '%s\n' "$DISPATCHES" | grep -c 'byproxy-critic' || true)"
   BUILDER_N="$(printf '%s\n' "$DISPATCHES" | grep -c 'byproxy-builder' || true)"
   AUDITOR_N="$(printf '%s\n' "$DISPATCHES" | grep -c 'byproxy-auditor' || true)"
@@ -350,26 +417,47 @@ $PROMPT"
   COST_BY_MODEL="$(jq -c '(.modelUsage // {}) | to_entries
     | map({key:.key, value:(.value.costUSD // 0)}) | from_entries' <<<"$RESULT_OBJ" 2>/dev/null || echo null)"
   jq -e . >/dev/null 2>&1 <<<"$COST_BY_MODEL" || COST_BY_MODEL='null'
+  # Cache economics per model + overall KV hit rate. Motivation (measured +
+  # sourced, 2026-07-17 research sweep): cache reads bill at 0.1x base input,
+  # so "resident context re-paid every turn" is ~10% true in dollars — the
+  # real per-arm cost drivers are cache WRITES and turn count, and no prior
+  # bench row could distinguish them. hit_rate = read / (read + write + raw).
+  USAGE_BY_MODEL="$(jq -c '(.modelUsage // {}) | to_entries | map({key:.key, value:{
+      in:(.value.inputTokens // 0), out:(.value.outputTokens // 0),
+      cache_read:(.value.cacheReadInputTokens // 0),
+      cache_write:(.value.cacheCreationInputTokens // 0)}}) | from_entries' \
+    <<<"$RESULT_OBJ" 2>/dev/null || echo null)"
+  jq -e . >/dev/null 2>&1 <<<"$USAGE_BY_MODEL" || USAGE_BY_MODEL='null'
+  CACHE_TOTALS="$(jq -c '[.[]] | {in:(map(.in)|add // 0), out:(map(.out)|add // 0),
+      cache_read:(map(.cache_read)|add // 0), cache_write:(map(.cache_write)|add // 0)}
+    | . + {hit_rate:(if (.cache_read + .cache_write + .in) > 0
+        then ((.cache_read / (.cache_read + .cache_write + .in)) * 1000 | round / 1000)
+        else null end)}' <<<"$USAGE_BY_MODEL" 2>/dev/null || echo null)"
+  jq -e . >/dev/null 2>&1 <<<"$CACHE_TOTALS" || CACHE_TOTALS='null'
 
   jq -n -c \
     --arg task "$TASK_NAME" --arg arm "$LABEL" --arg stamp "$STAMP" \
     --argjson rep "$rep" --argjson rc "$RC" --argjson wall "$WALL" \
     --argjson cost "$COST" --argjson usage "$USAGE" --argjson turns "$TURNS" \
     --argjson costmodel "$COST_BY_MODEL" \
+    --argjson usagemodel "$USAGE_BY_MODEL" --argjson cache "$CACHE_TOTALS" \
     --argjson score "$SCORE" \
     --arg diffstat "$DIFFSTAT" --argjson untracked "$UNTRACKED" \
     --argjson dispatches "${DISPATCH_N:-0}" --argjson explorers "${EXPLORER_N:-0}" \
     --argjson critics "${CRITIC_N:-0}" --argjson builders "${BUILDER_N:-0}" \
     --argjson auditors "${AUDITOR_N:-0}" \
+    --argjson craftsmen "${CRAFTSMAN_N:-0}" --argjson ccjudges "${CCJUDGE_N:-0}" \
     --argjson skillinv "${SKILL_N:-0}" \
     --argjson blind "$BLIND" \
     --arg raw "$(basename "$RAW")" \
     '{task:$task, arm:$arm, rep:$rep, stamp:$stamp, exit_code:$rc,
-      wall_s:$wall, cost_usd:$cost, cost_by_model:$costmodel, usage:$usage, num_turns:$turns,
+      wall_s:$wall, cost_usd:$cost, cost_by_model:$costmodel,
+      usage_by_model:$usagemodel, cache:$cache, usage:$usage, num_turns:$turns,
       byproxy_skill_invocations:$skillinv,
       subagent_dispatches:$dispatches, explorer_dispatches:$explorers,
       critic_dispatches:$critics, builder_dispatches:$builders,
       auditor_dispatches:$auditors,
+      craftsman_dispatches:$craftsmen, judge_dispatches:$ccjudges,
       score:$score, blind_disclosure:$blind,
       diffstat:$diffstat, new_files:$untracked, raw:$raw}' \
     | tee -a "$JSONL"

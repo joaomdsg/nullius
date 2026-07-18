@@ -1,0 +1,16 @@
+{
+  "groups": [
+    { "id": "conservation",
+      "catchers": ["TestConservation_PropertySequences", "TestConservation_SurvivesRoundTrip", "TestConservation_BalancedMultiCurrencyPost", "TestAtomicity_ErrorsChangeNothing", "TestImport_PreservesIdempotencyAndLifecycle", "TestVoid_Lifecycle"] },
+    { "id": "exact-arithmetic",
+      "catchers": ["TestAllocate_WorkedExamples", "TestAllocate_ExactSum", "TestAllocate_BigIntermediates", "TestParseAmount_Grammar", "TestAmount_StringRoundTrip", "TestAmount_AddNeg"] },
+    { "id": "idempotent-replay",
+      "catchers": ["TestPost_ReplayReturnsOriginal", "TestPost_RejectedKeyNotRecorded", "TestVoid_ReplayAndKeyNamespace"] },
+    { "id": "lifecycle-legality",
+      "catchers": ["TestVoid_Lifecycle", "TestJournal_SeqAndPagination", "TestAtomicity_ErrorsChangeNothing", "TestPost_BalanceOverflowAtomic", "TestCreateAccount_Contract", "TestPost_KeyAndMemoFieldContracts", "TestVoid_KeyFieldContract"] },
+    { "id": "canonical-roundtrip",
+      "catchers": ["TestExport_Deterministic", "TestExport_CanonicalShape", "TestExport_EscapeTableExactBytes", "TestExport_EmptyLedger", "TestExport_EscapingRoundTrip", "TestImport_PreservesIdempotencyAndLifecycle"] },
+    { "id": "hostile-input",
+      "catchers": ["TestImport_CorruptRejected", "TestImport_AcceptsCanonical", "TestImport_ReaderErrorPassthrough", "TestNoPanic_HostileInputs", "TestParseAmount_Grammar"] }
+  ]
+}

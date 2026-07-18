@@ -31,6 +31,21 @@ independent scoring, blind disclosure judge. Full reports in
 | nullius (benchmark 7, n=4 mean) | $6.23 | 5.75/6 | 4/4, 0 regressions |
 | v6 ceremony, sonnet control plane | $20.56 | 3/6 | — |
 
+Greenfield (lens-hostile by design: single-threaded double-entry ledger,
+29 hidden conformance tests, frozen before any rep — n=1 each):
+
+| arm | cost | hidden suite | turns |
+|---|---:|---:|---:|
+| plain fable, low effort | $3.98 | 29/29 | 25 |
+| cc-nullius plugin, full process | $7.08 | 29/29 | 57 |
+| **cc-nullius plugin, terrain-gated** | **$4.54** | **29/29** | **12** |
+
+The full process on empty lens terrain is pure tax (+78%). The fix is a
+load-bearing gate: terrain scouts must QUOTE the absence of lens targets
+before ceremony stands down — and with it, the plugin lands within noise
+of plain while keeping the mechanical guarantee that saved the brownfield
+runs (one softened hunt = the signature defect shipped silently, 5/6).
+
 Same quality as the honest top-tier run at **26% of its cost**. Better
 quality than the same-effort baseline at **half its cost** — in every
 rep. And the failed rows matter as much as the winning ones: contracts,
@@ -56,6 +71,17 @@ CONTAINER=1 JUDGE=1 ./run.sh tasks/vialite-todo plain --reps 3
 
 ## Install
 
+As a Claude Code plugin ([`cc-nullius/`](cc-nullius/) — diet-governor
+hook that ENFORCES the starvation, plus the scout/hunter/craftsman
+agents and the doctrine as a skill):
+
+```sh
+/plugin marketplace add <path-to-repo>/cc-nullius
+/plugin install nullius@nullius-local
+```
+
+Or as the bare skill + agent:
+
 ```sh
 git clone https://github.com/joaomdsg/nullius.git
 ln -s "$(pwd)/nullius/.claude/skills/nullius" ~/.claude/skills/nullius
@@ -68,9 +94,10 @@ Restart Claude Code (agents load at session start), then invoke
 ## Limits, stated plainly
 
 The lenses were derived and validated on one seeded-defect task;
-generalization to disjoint defect classes is unmeasured. The baseline is
-small-n and high-variance. All benchmarks so far are brownfield —
-greenfield is forecast, not measurement. And top-tier judgment only pays
+generalization to disjoint BROWNFIELD defect classes is unmeasured (the
+greenfield task was built lens-hostile on purpose). Nearly every
+plugin-era number is n=1 — replication is the standing debt. The
+brownfield baseline is small-n and high-variance. And top-tier judgment only pays
 where quality discriminates: on a mechanical task with a fully visible
 definition of done, a plain mid-tier run is a third of the price and
 just as green. Preregistered next experiments:
