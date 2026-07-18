@@ -1,0 +1,18 @@
+{
+	"name": "pi-nullius",
+	"version": "0.1.0",
+	"description": "nullius harness for pi: cheap throwaway scouts, mechanical context diet, evidence-ledger compaction",
+	"keywords": [
+		"pi-package"
+	],
+	"license": "MIT",
+	"pi": {
+		"extensions": [
+			"./extensions/index.ts"
+		]
+	},
+	"dependencies": {
+		"tree-sitter-wasms": "^0.1.13",
+		"web-tree-sitter": "^0.24.7"
+	}
+}
