@@ -6,6 +6,12 @@
 		"pi-package"
 	],
 	"license": "MIT",
+	"scripts": {
+		"test": "node --test extensions/*.test.ts"
+	},
+	"engines": {
+		"node": ">=23"
+	},
 	"pi": {
 		"extensions": [
 			"./extensions/index.ts"

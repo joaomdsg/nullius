@@ -17,13 +17,18 @@
  *   - Live status: resident context, growth per turn, leader vs scout $.
  *
  * Config (env):
- *   NULLIUS_SCOUT_MODEL   provider/model-id   (default anthropic/claude-haiku-4-5-20251001)
- *   NULLIUS_SCOUT_TIMEOUT seconds             (default 300)
- *   NULLIUS_DIET=0        disable the governor
- *   NULLIUS_MAX_READ      whole-read line ceiling (default 250)
- *   NULLIUS_MAX_EDIT      focused-fix edit-line ceiling (default 40)
- *   NULLIUS_TESTS_FIRST   source edits allowed per test touch (default 3)
- *   NULLIUS_OFF=1         disable the extension entirely
+ *   NULLIUS_SCOUT_MODEL    provider/model-id   (default local-fast/qwen3.6)
+ *   NULLIUS_SCOUT_TIMEOUT  seconds             (default 300)
+ *   NULLIUS_DIET=0         disable the governor
+ *   NULLIUS_MAX_READ       whole-read line ceiling (default 250)
+ *   NULLIUS_MAX_EDIT       focused-fix edit-line ceiling (default 40)
+ *   NULLIUS_TESTS_FIRST    source edits allowed per test touch (default 3)
+ *   NULLIUS_SCOUT_PARALLEL hunt-pipeline scout concurrency (default 5)
+ *   NULLIUS_AUTOHUNT=0     disable the auto-hunt on session start
+ *   NULLIUS_ADVISOR_MODEL  provider/model-id for the reasoning advisor
+ *                          (unset = consult tool not registered)
+ *   NULLIUS_DEBUG=1        debug logging to stderr
+ *   NULLIUS_OFF=1          disable the extension entirely
  */
 
 import { spawn } from "node:child_process";
@@ -31,7 +36,8 @@ import { existsSync, readFileSync } from "node:fs";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { COMPACTOR_PROMPT, LEADER_RULES, SCOUT_PROMPT } from "./prompts";
+import { ADVISOR_PROMPT, COMPACTOR_PROMPT, LEADER_RULES, SCOUT_PROMPT } from "./prompts";
+import { renderPack, validateConsult } from "./advisor";
 import { LENSES, lensById } from "./lenses";
 import {
 	evaluateEditGate,
@@ -42,10 +48,15 @@ import {
 	type EditGateState,
 } from "./gates";
 import { scanRepo, type Finding } from "./scanner";
+import { isHeavyCmd, isWideSearchCmd, isBoundedCmd, boundCommand } from "./diet";
+import { singleFlight } from "./singleflight";
 import { dirname, join } from "node:path";
 
 const SCOUT_MODEL = process.env.NULLIUS_SCOUT_MODEL ?? "local-fast/qwen3.6";
 const SCOUT_TIMEOUT_S = Number(process.env.NULLIUS_SCOUT_TIMEOUT ?? 300);
+// Reasoning-only judgment tier; unset = the consult tool is not registered.
+const ADVISOR_MODEL = process.env.NULLIUS_ADVISOR_MODEL;
+const ADVISOR_TIMEOUT_S = Number(process.env.NULLIUS_ADVISOR_TIMEOUT ?? 600);
 const DIET_ON = process.env.NULLIUS_DIET !== "0";
 const MAX_WHOLE_READ = Number(process.env.NULLIUS_MAX_READ ?? 250);
 const MAX_EDIT_LINES = Number(process.env.NULLIUS_MAX_EDIT ?? DEFAULT_MAX_EDIT_LINES);
@@ -75,12 +86,15 @@ function runScout(
 	cwd: string,
 	signal: AbortSignal,
 	timeoutS: number = SCOUT_TIMEOUT_S,
+	// session/tool args: scouts are throwaway; the advisor overrides with a
+	// persistent session and --no-tools.
+	extraArgs: string[] = ["--no-session"],
 ): Promise<ScoutRun> {
 	const { provider, model } = splitModel(modelSpec);
 	const args = [
 		"-p",
 		"--mode", "json",
-		"--no-session",
+		...extraArgs,
 		"--no-extensions",
 		"--no-skills",
 		"--no-context-files",
@@ -103,6 +117,7 @@ function runScout(
 		let cost = 0;
 		let tokens = 0;
 		let turns = 0;
+		let unparsedLines = 0;
 		const MAX_BYTES = 100_000_000;
 		const takeLine = (line: string) => {
 			if (!line.trim()) return;
@@ -110,6 +125,7 @@ function runScout(
 			try {
 				ev = JSON.parse(line);
 			} catch {
+				unparsedLines++; // non-protocol noise; surfaced if the scout yields no report
 				return;
 			}
 			poke(); // only real protocol events reset the idle timer
@@ -154,7 +170,7 @@ function runScout(
 			}
 			takeLine(buf); // flush the final partial line
 			if (!text) {
-				reject(new Error(`scout produced no report (exit ${child.exitCode})\n${err.slice(-500)}`));
+				reject(new Error(`scout produced no report (exit ${child.exitCode}, ${unparsedLines} unparsable stdout lines)\n${err.slice(-500)}`));
 				return;
 			}
 			resolve({ text, cost, tokens, turns });
@@ -201,13 +217,9 @@ function capLines(text: string, cap: number): string {
 	return `${lines.slice(0, cap).join("\n")}\n…[scout report truncated at ${cap} lines — refine the dispatch instead of raising the cap]`;
 }
 
-/** Heavy commands the leader must never run in its own context. */
-const HEAVY_RE =
-	/\b(go\s+(test|build|vet)|npm\s+(test|run|ci|install)|pnpm\s+(test|run|install)|yarn\s+(test|run)|pytest|cargo\s+(test|build|check|clippy)|make(\s|$)|mvn|gradle|tsc(\s|$)|eslint|ruff|golangci-lint|ctest|dotnet\s+(test|build))/;
-/** Repo-wide searches that belong in a scout. */
-const WIDE_SEARCH_RE = /\b(grep\s+-[a-zA-Z]*r|rg\s+(?!.*\s\S+\.(go|ts|js|py|rs|c|h|java)\b))/;
-const BOUNDED_RE = /\|\s*(tail|head|wc|grep -c|sort .*\| *head)/;
 const ESCAPE = "#nullius:ok";
+const DEBUG = process.env.NULLIUS_DEBUG === "1";
+const dbg = (msg: string) => DEBUG && console.error(`[nullius] ${msg}`);
 
 export default function nullius(pi: ExtensionAPI) {
 	if (process.env.NULLIUS_OFF === "1") return;
@@ -304,6 +316,69 @@ export default function nullius(pi: ExtensionAPI) {
 		},
 	});
 
+	// ── the advisor: reasoning-only judgment tier (consult tool) ─────────
+	// The fast leader cannot be trusted with design decisions; the advisor
+	// (a slow reasoning model, no tools) rules on structured consult packs.
+	// Its memory is a persistent pi session: --session-id creates it on the
+	// first consult, --session resumes it after. Guidance returns marked as
+	// testimony — the leader quote-verifies before acting.
+	let advisorSessionId: string | null = null;
+	let consults = 0;
+	let advisorCost = 0;
+	if (ADVISOR_MODEL) {
+		pi.registerTool({
+			name: "consult",
+			label: "Consult",
+			description:
+				"Consult the reasoning advisor (no tools — it knows ONLY what packs quote). MANDATORY at: stage=plan when the hunt checklist lands; stage=surprise when evidence contradicts the plan or a verdict stays ambiguous; stage=close before the close report. Fill every field mechanically from the ledger — quote verbatim, never summarize.",
+			parameters: Type.Object({
+				stage: Type.Union(
+					[Type.Literal("terrain"), Type.Literal("plan"), Type.Literal("surprise"), Type.Literal("close")],
+					{ description: "Which gate this consult serves" },
+				),
+				goal: Type.String({ description: "The mandate, verbatim from the user — never a paraphrase" }),
+				state: Type.String({
+					description: "Every checklist/plan item with its status, one per line; 'none yet' before the hunt",
+				}),
+				evidence: Type.Array(Type.String(), {
+					description:
+						"NEW quoted facts since the last consult, each item 'path:line — `verbatim quote`'. Mechanisms and machine output only. Include everything that CONTRADICTS the current plan. Exactly ['NONE'] if nothing is new.",
+				}),
+				question: Type.String({ description: "The single ruling you need, one sentence" }),
+			}),
+			async execute(_toolCallId, params: any, signal) {
+				const bad = validateConsult(params);
+				if (bad) return { content: [{ type: "text", text: bad }], details: {}, isError: true };
+				const pack = renderPack(++consults, params);
+				const fresh = !advisorSessionId;
+				const sid = (advisorSessionId ??= `nullius-advisor-${Date.now().toString(36)}`);
+				try {
+					const run = await runScout(pack, ADVISOR_PROMPT, ADVISOR_MODEL, process.cwd(), signal, ADVISOR_TIMEOUT_S, [
+						fresh ? "--session-id" : "--session", sid, "--no-tools",
+					]);
+					advisorCost += run.cost;
+					return {
+						content: [
+							{
+								type: "text",
+								text: `${capLines(run.text, 100)}\n\n[nullius: advisor guidance is TESTIMONY — quote-verify every mechanism it names before acting on it.]`,
+							},
+						],
+						details: { cost: run.cost, tokens: run.tokens, consult: consults },
+					};
+				} catch (e: any) {
+					consults--;
+					if (fresh) advisorSessionId = null; // session may not exist — mint anew next time
+					return {
+						content: [{ type: "text", text: `consult failed — ${e?.message ?? e}` }],
+						details: {},
+						isError: true,
+					};
+				}
+			},
+		});
+	}
+
 	// ── the hunt pipeline: deterministic scan → hunters → refuters ───────
 	interface Item {
 		id: string;
@@ -359,8 +434,18 @@ Default to CONFIRMED if uncertain. Output ONLY V| lines, nothing else.`;
 		return m;
 	}
 
+	// The hunt tool and the auto-hunt can both want the pipeline; two
+	// concurrent runs interleave at the awaits and corrupt the shared
+	// checklist, so everyone joins one flight. huntRan commits only on
+	// success — a failed auto-hunt leaves the manual hunt (and the
+	// agent_settled nag) as the recovery path.
+	const startHunt = singleFlight(async (signal: AbortSignal, progress?: (s: string) => void) => {
+		const summary = await runHuntPipeline(signal, progress);
+		huntRan = true;
+		return summary;
+	});
+
 	async function runHuntPipeline(signal: AbortSignal, progress?: (s: string) => void): Promise<string> {
-			huntRan = true;
 			const pkgDir = join(dirname(__filename), "..");
 			const root = process.cwd();
 			progress?.("scanning (tree-sitter)…");
@@ -509,7 +594,9 @@ Default to CONFIRMED if uncertain. Output ONLY V| lines, nothing else.`;
 CHECKLIST — ${checklist.length} suspects survived adversarial refutation${overflow ? ` (${overflow} lower-priority suspects withheld — ask via hunt again after ruling these)` : ""}${unverifiedCount ? `; ${unverifiedCount} targets unadjudicated after retry (scout failures) — treat their areas as UNKNOWN` : ""}. Each is IN-MANDATE. For EVERY item: read the quoted location yourself (ranged), then call rule(id, verdict, evidence) — "fixed" (name the test that proves it), "refuted" (quote the mechanism that clears it), or "out_of_mandate" (reason). You cannot close with open items.
 
 ${lines.join("\n")}`;
-			return summary;
+			return ADVISOR_MODEL
+				? `${summary}\n\nMANDATORY NEXT: consult(stage=plan) with this checklist as STATE — the advisor rules fix order and what is load-bearing before you rule or fix anything.`
+				: summary;
 	}
 
 	pi.registerTool({
@@ -519,7 +606,7 @@ ${lines.join("\n")}`;
 			"Run the nullius hunt pipeline over the whole tree: a deterministic tree-sitter lens scan (no LLM) enumerates every relied-on property with no locally visible mechanism; scout hunters adjudicate the ambiguous ones; independent refuters attack every ABSENT claim. Returns a checklist of surviving suspects — each is in-mandate and MUST be ruled via the rule tool (fixed / refuted / out_of_mandate) before you close. Call this ONCE, early, before designing anything (skip if the harness already delivered the checklist).",
 		parameters: Type.Object({}),
 		async execute(_id, _params, signal, onUpdate, ctx) {
-			const summary = await runHuntPipeline(signal, (t) => onUpdate?.({ content: [{ type: "text", text: t }] }));
+			const summary = await startHunt(signal, (t) => onUpdate?.({ content: [{ type: "text", text: t }] }));
 			if (ctx.hasUI) ctx.ui.setStatus("nullius", status());
 			return { content: [{ type: "text", text: summary }], details: { items: checklist.length } };
 		},
@@ -660,22 +747,21 @@ ${lines.join("\n")}`;
 			const inp: any = event.input;
 			const cmd = (inp.command as string) ?? "";
 			if (cmd.includes(ESCAPE)) return; // explicit leader override
-			if (HEAVY_RE.test(cmd)) {
+			if (isHeavyCmd(cmd)) {
 				return {
 					block: true,
 					reason: `nullius: builds/tests/linters never run in your context — their output is bulk you re-pay every turn. Dispatch scout(mode=rerun) with this exact command; its verbatim run is the trusted record. (Override only if genuinely tiny: prefix the command with ${ESCAPE}.)`,
 				};
 			}
-			if (WIDE_SEARCH_RE.test(cmd) && !BOUNDED_RE.test(cmd)) {
+			if (isWideSearchCmd(cmd) && !isBoundedCmd(cmd)) {
 				return {
 					block: true,
 					reason: `nullius: repo-wide searches belong in a scout (mode=recon/hunt) — dispatch it and take the capped report. If you must run this yourself, bound it: append '2>&1 | tail -n 20'.`,
 				};
 			}
-			if (!BOUNDED_RE.test(cmd) && !cmd.includes("<<") && !cmd.includes("\n") && cmd.length < 500) {
-				// Silently bound single-line unbounded commands.
-				inp.command = `{ ${cmd} ; } 2>&1 | tail -n 30`;
-			}
+			// Silently bound single-line unbounded commands.
+			const bounded = boundCommand(cmd);
+			if (bounded) inp.command = bounded;
 		}
 	});
 
@@ -732,7 +818,7 @@ ${lines.join("\n")}`;
 		description: "Show nullius run stats and config",
 		handler: async (_args, ctx) => {
 			ctx.ui.notify(
-				`${status()} · ${leaderTurns} leader turns · scout=${SCOUT_MODEL} · diet=${DIET_ON ? "on" : "off"} (NULLIUS_DIET=0 to disable)`,
+				`${status()} · ${leaderTurns} leader turns · scout=${SCOUT_MODEL}${ADVISOR_MODEL ? ` · advisor=${ADVISOR_MODEL} (${consults} consults $${advisorCost.toFixed(2)})` : ""} · diet=${DIET_ON ? "on" : "off"} (NULLIUS_DIET=0 to disable)`,
 				"info",
 			);
 		},
@@ -750,7 +836,7 @@ ${lines.join("\n")}`;
 		pi.on("session_shutdown", async () => ac.abort());
 		void (async () => {
 			try {
-				const summary = await runHuntPipeline(ac.signal, (t) => {
+				const summary = await startHunt(ac.signal, (t) => {
 					if (ctx.hasUI) ctx.ui.setStatus("nullius-hunt", `hunt: ${t}`);
 				});
 				if (!checklist.length) {
@@ -771,7 +857,7 @@ ${lines.join("\n")}`;
 		kickAutoHunt(ctx);
 	});
 	pi.on("before_agent_start", async (_e, ctx) => {
-		console.error(`[nullius] before_agent_start: hasUI=${(ctx as any).hasUI} huntRan=${huntRan} started=${autoHuntStarted}`);
+		dbg(`before_agent_start: hasUI=${(ctx as any).hasUI} huntRan=${huntRan} started=${autoHuntStarted}`);
 		// Interactive: hunt concurrently, deliver via user message.
 		// Headless (-p): the process exits at settle, so BLOCK here — the
 		// checklist must be in context before the first turn.
@@ -784,9 +870,9 @@ ${lines.join("\n")}`;
 		try {
 			const ac = new AbortController();
 			pi.on("session_shutdown", async () => ac.abort());
-			console.error("[nullius] blocking auto-hunt: pipeline starting");
-			const summary = await runHuntPipeline(ac.signal);
-			console.error(`[nullius] blocking auto-hunt: done, ${checklist.length} items`);
+			dbg("blocking auto-hunt: pipeline starting");
+			const summary = await startHunt(ac.signal);
+			dbg(`blocking auto-hunt: done, ${checklist.length} items`);
 			if (!checklist.length) return;
 			return {
 				message: {

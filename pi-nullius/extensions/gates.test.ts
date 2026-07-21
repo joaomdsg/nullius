@@ -4,6 +4,15 @@
  * (Node >= 23 strips the TS types natively; no build step.)
  */
 import { test } from "node:test";
+
+// editText edge shapes: unknown inputs must fail-open to "" (size gate
+// no-ops, ratchet still runs) and sparse edit arrays must not crash.
+test("editText handles unknown and sparse shapes", () => {
+	assert.equal(editText(undefined), "");
+	assert.equal(editText({ weird: true }), "");
+	assert.equal(editText({ edits: [{}, { newText: "a" }] }), "\na");
+	assert.equal(editText({ new_string: "x" }), "x");
+});
 import assert from "node:assert/strict";
 import {
 	isTestPath,
