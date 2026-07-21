@@ -69,19 +69,22 @@ pass/fail oracle (see `CONTRACT.md` §5).
 
 | arm | score | total cost | turns | wall |
 |-----|-------|-----------|-------|------|
-| plain        | 22/24 | $8.95 | 55   | 1029s |
-| recursive    | 22/24 | $4.88 | 7+44 | 1059s |
-| nullius-solo | 22/24 | $6.34 | 29   | 806s  |
+| plain        | 24/24 | $8.95 | 55   | 1029s |
+| recursive    | 24/24 | $4.88 | 7+44 | 1059s |
+| nullius-solo | 24/24 | $6.34 | 29   | 806s  |
 
-Flat quality tie; cost ranks recursive < nullius-solo < plain. The method alone
-cuts plain ~29%, recursion ~45%, at equal quality. All three fail the same two
-tests — T1 (session cookie missing `HttpOnly`) and T7 (contact fields not
-HTML-escaped) — real port gaps, not oracle false-negatives. Full writeup:
-[`benchmarks/2026-07-21-agri-scale-discriminator.md`](../../../2026-07-21-agri-scale-discriminator.md).
+Flat quality tie at a full 24/24; cost ranks recursive < nullius-solo < plain
+— the method alone cuts plain ~29%, recursion ~45%, at equal quality. Full
+writeup: [`benchmarks/2026-07-21-agri-scale-discriminator.md`](../../../2026-07-21-agri-scale-discriminator.md).
 
 ## Calibration
 
 The oracle was frozen (`FROZEN.sha256`) *before* any complete passing reference
-existed — a deliberately deferred reference. The first run validated it: three
-independent arms converge on the identical 22/24 with the identical two
-failures, both real gaps, so no assertion needed tuning.
+existed. That risk bit: the first run reported 22/24 for all three arms, each
+failing the *same two* tests (T1, T7) — the signature of an oracle
+false-negative, not three identical port gaps. Both were real oracle bugs (T1
+read `HttpOnly` from a Go `cookiejar`, which drops the flag; T7 asserted a
+freshly-created contact on page 1, but with 20 seeds + PAGE_SIZE 15 it lands on
+page 2). Fixed against Via's real behavior (`h.Text` escapes; `App.sessionCookie`
+sets `HttpOnly`) and re-frozen; the unchanged arm binaries then scored 24/24.
+Lesson: green-on-a-stub is not calibration — convergent cross-arm failures are.

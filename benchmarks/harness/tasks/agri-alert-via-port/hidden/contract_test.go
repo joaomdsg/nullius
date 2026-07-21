@@ -49,7 +49,7 @@ func TestT1_LoginManagerRedirectsHome(t *testing.T) {
 	if loc := resp.Header.Get("Location"); loc != "/" {
 		t.Fatalf("manager login Location=%q, want /", loc)
 	}
-	if ck := hasCookie(t, c, a, "session_token"); ck == nil {
+	if ck := cookieFromResponse(resp, "session_token"); ck == nil {
 		t.Fatal("login did not set session_token cookie")
 	} else if !ck.HttpOnly {
 		t.Fatal("session_token cookie must be HttpOnly")
@@ -129,7 +129,9 @@ func TestT7_ContactTitleHTMLEscaped(t *testing.T) {
 	resp := postValues(t, c, a.base+"/contacts", validContact("C8888", "<b>x</b>", "911111111"))
 	resp.Body.Close()
 	mustStatus(t, resp.StatusCode, http.StatusSeeOther)
-	_, b := getBody(t, c, a.base+"/")
+	// The created contact takes the next id and sorts last, so it lands on the
+	// final page (PAGE_SIZE 15) — fetch that page, not page 1.
+	b := lastListPage(t, c, a)
 	mustContain(t, b, "&lt;b&gt;x&lt;/b&gt;", "escaped contact name")
 	mustNotContain(t, b, "<b>x</b>", "raw unescaped name must not appear")
 }

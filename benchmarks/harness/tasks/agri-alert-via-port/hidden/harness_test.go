@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -150,17 +151,47 @@ func getBody(t *testing.T, c *http.Client, url string) (int, string) {
 	return resp.StatusCode, body(t, resp)
 }
 
-// hasCookie reports whether the client's jar holds a cookie of the given name
-// for the app's base URL.
-func hasCookie(t *testing.T, c *http.Client, a *app, name string) *http.Cookie {
-	t.Helper()
-	req, _ := http.NewRequest("GET", a.base+"/", nil)
-	for _, ck := range c.Jar.Cookies(req.URL) {
+// cookieFromResponse returns the named cookie parsed from a response's
+// Set-Cookie headers, or nil. Unlike a cookie read back out of an
+// http.CookieJar (which only carries Name/Value), this preserves the full
+// attribute set — HttpOnly, Secure, SameSite, Max-Age — so attribute
+// assertions are meaningful.
+func cookieFromResponse(resp *http.Response, name string) *http.Cookie {
+	for _, ck := range resp.Cookies() {
 		if ck.Name == name {
 			return ck
 		}
 	}
 	return nil
+}
+
+// lastListPage fetches the contacts list page holding the highest ids. A newly
+// created contact takes the next id and sorts last (PAGE_SIZE 15), so it lands
+// on the final page — the page number is derived from the data-count total on
+// page 1, not assumed to be page 1.
+func lastListPage(t *testing.T, c *http.Client, a *app) string {
+	t.Helper()
+	_, first := getBody(t, c, a.base+"/")
+	const marker = `data-count="`
+	i := strings.Index(first, marker)
+	if i < 0 {
+		t.Fatal("contacts page 1 has no data-count attribute")
+	}
+	rest := first[i+len(marker):]
+	j := strings.IndexByte(rest, '"')
+	if j < 0 {
+		t.Fatal("malformed data-count attribute")
+	}
+	n, err := strconv.Atoi(rest[:j])
+	if err != nil {
+		t.Fatalf("data-count not an integer: %v", err)
+	}
+	page := 1
+	if n > 0 {
+		page = (n + 14) / 15
+	}
+	_, b := getBody(t, c, a.base+"/?page="+strconv.Itoa(page))
+	return b
 }
 
 func urlEncode(s string) string {
