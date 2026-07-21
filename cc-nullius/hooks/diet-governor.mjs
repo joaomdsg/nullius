@@ -98,7 +98,13 @@ function droppedExports(oldS, newS) {
   for (const m of (oldS || "").matchAll(/export\s*\{([^}]*)\}/g))
     for (const part of m[1].split(","))
       { const n = part.trim().split(/\s+as\s+/).pop().trim(); if (n) names.add(n); }
-  return [...names].filter((n) => !(newS || "").includes(n));
+  // A symbol counts as dropped unless it still appears as a STANDALONE
+  // identifier in newS — substring `includes` would wrongly clear a rename
+  // (old `Foo` "found" inside new `FooBar`), letting a real boundary change
+  // through. Lookarounds exclude identifier chars ($ and _ included).
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return [...names].filter(
+    (n) => !new RegExp(`(?<![\\w$])${esc(n)}(?![\\w$])`).test(newS || ""));
 }
 
 // ---- craftsman gates --------------------------------------------------------
@@ -118,8 +124,17 @@ const craftsman = /(^|:)nullius-craftsman$/.test(data.agent_type || "");
 if (data.agent_id && craftsman) {
   if (tool === "Edit" || tool === "Write") {
     const path = ti.file_path || "";
-    if (tool === "Edit") {
-      const dropped = droppedExports(ti.old_string, ti.new_string);
+    // Boundary gate: an Edit OR a whole-file Write that drops/renames an
+    // exported symbol is the orchestrator's call, not the craftsman's. For a
+    // Write the "old" is the on-disk file (a NEW file has no exports to drop).
+    let oldS, newS;
+    if (tool === "Edit") { oldS = ti.old_string; newS = ti.new_string; }
+    else if (existsSync(path) && isSourcePath(path)) {
+      try { oldS = readFileSync(path, "utf8"); } catch { oldS = undefined; }
+      newS = ti.content || "";
+    }
+    if (oldS !== undefined) {
+      const dropped = droppedExports(oldS, newS);
       if (dropped.length) deny(
         `nullius boundary gate: removing/renaming exported ${dropped.join(", ")} is the ` +
         "orchestrator's decision. Implement within the pinned mechanism, or report " +

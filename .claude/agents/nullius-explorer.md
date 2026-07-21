@@ -69,7 +69,8 @@ You will be told which mode you are in.
 - **narrow** — one specific question. Report the fields the dispatch's
   `REPORT:` line asks for.
 - **hunt** — the dispatch carries lenses (serialization, fault-survival,
-  scope confinement, wake predicates, lost updates, swallowed errors).
+  scope confinement, wake predicates, lost updates, lifecycle races,
+  resource release, swallowed errors).
   Answer each with a quoted mechanism or the quoted absence of one.
 - **rerun** — the dispatch names commands (tests, build, vet — often
   under -race). Run them exactly as given and quote the results VERBATIM.

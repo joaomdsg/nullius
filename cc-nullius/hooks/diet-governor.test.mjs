@@ -204,6 +204,26 @@ test("craftsman boundary gate: dropping an exported symbol is denied", () => {
   assert.match(decision.permissionDecisionReason, /AppendToHead/);
 });
 
+test("craftsman boundary gate: RENAMING an exported symbol is denied (was: substring `includes` cleared it)", () => {
+  // old `AppendToHead` renamed to `AppendToHeadV2`: substring matching found
+  // "AppendToHead" inside "AppendToHeadV2" and wrongly cleared the drop.
+  const { decision } = run({ agent_type: "nullius-craftsman", agent_id: "c11",
+    tool_name: "Edit", tool_input: { file_path: join(CWD, "api.go"),
+      old_string: "func AppendToHead(x int) {}",
+      new_string: "func AppendToHeadV2(x int) {}" } });
+  assert.equal(decision?.permissionDecision, "deny");
+  assert.match(decision.permissionDecisionReason, /AppendToHead/);
+});
+
+test("craftsman boundary gate: a whole-file WRITE dropping an exported symbol is denied (was: Write skipped the gate)", () => {
+  const f = join(CWD, "boundary_write.go");
+  writeFileSync(f, "package p\nfunc ExportedThing() {}\n");
+  const { decision } = run({ agent_type: "nullius-craftsman", agent_id: "c12",
+    tool_name: "Write", tool_input: { file_path: f, content: "package p\n// gone\n" } });
+  assert.equal(decision?.permissionDecision, "deny");
+  assert.match(decision.permissionDecisionReason, /ExportedThing/);
+});
+
 test("craftsman gate binds under the PLUGIN-NAMESPACED agent_type (was: === missed the prefix)", () => {
   // marketplace install delivers agent_type "nullius:nullius-craftsman";
   // a `=== nullius-craftsman` check fell through to the subagent passthrough
@@ -310,7 +330,7 @@ test("SessionStart hook injects the doctrine pointer as additionalContext", () =
   });
   const o = JSON.parse(res.stdout).hookSpecificOutput;
   assert.equal(o.hookEventName, "SessionStart");
-  assert.match(o.additionalContext, /invoke the `nullius` skill/);
+  assert.match(o.additionalContext, /invoke the `nullius:nullius` skill/);
   assert.match(o.additionalContext, /two-turn hunt/);
   // a pointer, not the full body — keep it cheap
   assert.ok(o.additionalContext.length < 700, "nudge must stay a pointer, not the doctrine");
