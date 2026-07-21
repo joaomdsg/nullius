@@ -26,19 +26,29 @@ are the methodology — obey the steering reason, never fight it.
   the code — never a size reflex, and the governor no longer caps write
   size (a hook fires after you have already spent the output tokens, so
   denying only makes the craftsman regenerate the same bytes). Delegate
-  only when ALL hold: (a) the change is a large self-contained build —
-  measured crossover with an Opus leader is **~1,800 lines if the
-  craftsman must read context cold, ~130 lines if you hand it lean
-  context**; below that you are cheaper writing it yourself; (b) you can
+  only when ALL hold: (a) the change is a large self-contained build. The
+  crossover scales INVERSELY with the leader↔craftsman output-rate gap —
+  `crossover_lines ≈ cold-absorption tax ÷ (leader_out − craftsman_out)`
+  — so it re-stales on every leader-model swap; recompute from the gap,
+  never reuse a fixed line count. Worked, craftsman = sonnet ($15/M out):
+  **Opus leader** ($26/M, gap $11/M) → ~1,800 lines cold / ~130 lean
+  (MEASURED); **fable-5 leader** ($50/M, gap $35/M ≈ 3× wider) → **~560
+  cold / ~40 lean** (EXTRAPOLATED from the same linear model, unmeasured —
+  directionally consistent with agri where recursion was cheapest at
+  scale under a fable leader); **sonnet leader** (no downtier gap) →
+  delegation never wins on write cost, only on residency. Below the
+  crossover you are cheaper writing it yourself; (b) you can
   hand it LEAN context (the exact files/lines/contract inline) — a cold
   craftsman that re-absorbs what you already hold erases the saving
   (measured: cold-dispatched sonnet cost MORE per output token than the
   Opus leader writing it directly); (c) turns remain for its residency
   saving to matter. Otherwise write it yourself. (Why writes are the
-  tax: the leader's output is only ~1.7x the craftsman's — Opus out
-  ~$26/M vs sonnet $15/M — so the ~$0.4 cold-absorption tax dominates
-  until the build is very large. Published consensus agrees: delegated
-  reading is the win, delegated writing is the tax.)
+  tax: with an Opus leader its output is only ~1.7x the craftsman's
+  (~$26/M vs sonnet $15/M), so the ~$0.4 cold-absorption tax dominates
+  until the build is very large; a fable-5 leader is ~3.3x the craftsman
+  ($50/M), a wider gap that pulls the crossover down accordingly — see
+  (a). Published consensus agrees: delegated reading is the win,
+  delegated writing is the tax.)
   **When a build is too big to hold in one context, delegate it to
   `nullius-build` (a Bash command) rather than a plain craftsman
   subagent** — it runs the build in a NESTED nullius session (its own
@@ -228,6 +238,13 @@ agents absorb, hunt, build, verify — never decide.
    behavioral test on CAS beat a wrong hunter clearance).
 5. **Fix everything in-mandate.** A confirmed defect disclosed-not-fixed
    is a failed run. RISKS = only what you could not confirm.
+   **Tests are testimony, not verdicts.** For each test you wrote, name the
+   change that flips it red (none → vacuous, cut it); for any red you'd fix,
+   name a correct impl that passes it (none → the *test* is the defect — fix
+   it, record as an ORACLE finding, never silently). Correcting a test needs
+   more proof than correcting code: the quoted assertion path AND an external
+   mechanism showing no correct impl can pass. Second identical failure of a
+   fix you trust → audit the assertion before the third.
 6. **Close: ONE scout dispatch** — full suite + vet + the project's
    linters (verbatim record, -race where concurrency was touched) AND the
    surface diff: `git diff` against base, every removed/changed

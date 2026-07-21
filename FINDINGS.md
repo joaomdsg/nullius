@@ -50,12 +50,20 @@ under subscription auth.
   the plain arm never formed the suspicion at all. n=1 clean per arm
   (rep 2 was scrubbed on a spend limit).
 
-- **Recursion pays on large absorption.** Porting a 154k-token Nuxt/Vue
-  frontend to Go: a nested nullius session (`nullius-build`, sonnet +
-  its own haiku scouts) finished at **$5.54**; a plain cold sonnet doing
-  the same **timed out at $17.19**. 3.1× cheaper and the difference
-  between shipping and not — the nested session's sonnet context stayed
-  ~5× leaner (7.8M vs 41.2M cache-reads). n=1.
+- **Recursion buys correctness insurance on large absorption, and wins on
+  cost only at real scale — not a headline multiple.** The once-cited
+  "3.1× cheaper" ($5.54 vs a $17.19 timeout on a 154k-token Nuxt/Vue→Go
+  port) was a **fallback artifact** — a run where the nested recursion
+  never actually engaged. Retracted; do not cite. The engaged A/Bs (all
+  n=1): on the xover port, true recursion cost **+19%** and lost some
+  depth (the brief is lossy compression) BUT compiled and passed tests
+  where the plain arm shipped a false-green broken build; on a small,
+  fully-specified port (port-todo) it is a **wash** (±~20% either way,
+  equal quality); at genuine scale (agri-alert-via-port, 24-test oracle)
+  it was the **cheapest** arm — **$4.88** (fable leader $1.26 + sonnet
+  craftsman $3.62) vs $6.34 nullius-solo vs $8.95 plain, all 24/24. Net:
+  the value is the false-green catch plus a cost win that only appears at
+  scale; recursion does not pay on small, well-specified builds.
 
 ---
 

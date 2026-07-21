@@ -1,6 +1,6 @@
 ---
 name: nullius
-description: Nullius in verba — take nobody's word for it. A measured, ceremony-free methodology for coding tasks. The leader (top-tier model) works hands-on and pays only for judgment; throwaway haiku scouts (nullius-explorer) absorb all bulk context — builds, tests, sweeps, verification reruns; lens-driven hunts demand quoted mechanisms instead of trusted claims; every confirmed in-mandate defect is fixed before close; a scout rerun, never self-reported green, is the record. Use whenever the user invokes nullius, asks for a lean/verified/evidence-driven build, or hands over work where latent defects and subtle invariants matter.
+description: Nullius in verba — take nobody's word for it. A measured, ceremony-free methodology for coding tasks. The leader (top-tier model) works hands-on and pays only for judgment; throwaway haiku scouts (nullius-explorer) absorb all bulk context — builds, tests, sweeps, verification reruns; lens-driven hunts demand quoted mechanisms instead of trusted claims; every confirmed in-mandate defect is fixed before close; a scout rerun, never self-reported green, is the record. Use whenever the user invokes nullius, asks for a lean/verified/evidence-driven build, or hands over work where latent defects and subtle invariants matter. NOTE: this is the pre-plugin BARE form (what benchmarks 1–7 measured); with the cc-nullius plugin installed, prefer the `nullius:nullius` plugin skill, which adds the FULL/BUILD terrain gate, the gap check, and the tightened turn budget.
 ---
 
 # nullius

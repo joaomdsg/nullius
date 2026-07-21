@@ -154,8 +154,10 @@ if (quick) { bump("quick_passes"); if (tool !== "Bash") allow(); }
 // MCP responses are ungoverned bulk — one browser-HTML or document fetch can
 // out-bloat everything the rest of this file prevents. Bulk-verb calls are
 // steered to scouts (subagents reach the session's MCP tools via ToolSearch).
-if (/^mcp__/.test(tool) && process.env.NULLIUS_MCP_OK !== "1" &&
-    /(read|fetch|search|list|query|download|export|get_|history|logs|messages|threads|files|content|html|eval)/i.test(tool)) deny(
+const isMcpBulk = /^mcp__/.test(tool) &&
+  /(read|fetch|search|list|query|download|export|get_|history|logs|messages|threads|files|content|html|eval)/i.test(tool);
+if (isMcpBulk && process.env.NULLIUS_MCP_OK === "1") bump("escape:mcp_ok");
+if (isMcpBulk && process.env.NULLIUS_MCP_OK !== "1") deny(
   "nullius: MCP bulk lands unbounded in your context. Dispatch nullius-scout " +
   "with the question; it can reach the same MCP tools and returns a capped, " +
   "anchored report. (NULLIUS_MCP_OK=1 or /nullius:quick to disable this gate.)");
@@ -238,7 +240,7 @@ if (tool === "Read") {
 
 if (tool === "Bash") {
   const cmd = ti.command || "";
-  if (cmd.includes("#nullius:ok")) allow();
+  if (cmd.includes("#nullius:ok")) { bump("escape:ok"); allow(); }
 
   const HEAVY_RE = /\b(go\s+(test|build|vet)|npm\s+(test|run|ci|install)|pnpm|yarn|pytest|vitest|jest|bun\s+(test|install|run)|deno\s+(test|task|check)|pip3?\s+install|uv\s+(sync|run|pip)|cargo\s+(test|build|check|clippy)|make\b|tsc\b|eslint|ruff|mypy|mvn\b|gradle|dotnet\s+(test|build)|ctest)\b/;
   if (!quick && HEAVY_RE.test(cmd)) deny(

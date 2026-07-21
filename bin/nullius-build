@@ -3,9 +3,12 @@
 # a NESTED nullius session (sonnet craftsman + haiku scouts) so the calling
 # session's own context stays lean. This is the piece the plugin structurally
 # can't do (subagents can't spawn subagents) — recursion needs a nested
-# `claude -p`. Measured 2026-07-20 on a 154k-token frontend port: 3.1x cheaper
-# and it COMPLETED where a plain cold sonnet run timed out ($5.54 vs $17.19),
-# because haiku holds the bulk and the sonnet holds only capped reports.
+# `claude -p`. Measured value (all n=1): at genuine scale (agri-alert-via-port,
+# 24-test oracle) the nested build was the CHEAPEST arm — $4.88 vs $6.34 solo
+# vs $8.95 plain, all passing; and on an earlier port it compiled + passed tests
+# where a plain cold run shipped a false-green broken build. (An earlier "3.1x
+# cheaper / $5.54 vs $17.19" figure was a fallback artifact where recursion
+# never engaged — retracted, do not cite.)
 #
 # Usage:
 #   nullius-build "<lean brief>"            # build in the current dir
