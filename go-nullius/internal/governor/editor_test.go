@@ -106,3 +106,18 @@ func TestResidencyLifecycle(t *testing.T) {
 		t.Error("invalidated file must not be served as resident")
 	}
 }
+
+// TestEditorReset pins post-close compaction semantics: residency must
+// not survive a reset — the transcript it described is gone.
+func TestEditorReset(t *testing.T) {
+	e := NewEditor()
+	e.NoteRead("/a/b.go", 0, 0)
+	e.MarkRuled("/c/d.go")
+	e.Reset()
+	if e.IsResident("/a/b.go", 0, 0) {
+		t.Error("read still resident after Reset — a dup-read would be served a pointer to evicted content")
+	}
+	if n := e.Sweep(nil); n != 0 {
+		t.Errorf("Sweep after Reset evicted %d, want 0 (ruled set must be cleared)", n)
+	}
+}

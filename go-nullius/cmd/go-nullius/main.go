@@ -101,6 +101,7 @@ func run(prompt, modelF string, scoutMode bool, dirF, session string, maxTurns i
 		maxTok  int64
 		editor  *governor.Editor
 		tail    func() string
+		closer  *leader.CloseTool
 	)
 	if scoutMode {
 		system = scoutRules
@@ -123,6 +124,7 @@ func run(prompt, modelF string, scoutMode bool, dirF, session string, maxTurns i
 		editor = governor.NewEditor()
 		tail = leader.TailRender(led)
 		sct := &scout.Tool{Bin: bin, Dir: dir, Model: "haiku", NulliusDir: nulliusDir, Stats: stats}
+		closer = &leader.CloseTool{Ledger: led, Scout: sct}
 		toolset = []agent.Tool{
 			&tools.ReadTool{Tr: tracker, Ed: editor},
 			&tools.EditTool{Tr: tracker},
@@ -130,7 +132,7 @@ func run(prompt, modelF string, scoutMode bool, dirF, session string, maxTurns i
 			sct,
 			&leader.HuntTool{Ledger: led, Scout: sct},
 			&leader.RuleTool{Ledger: led, Ed: editor},
-			&leader.CloseTool{Ledger: led, Scout: sct},
+			closer,
 		}
 	}
 
@@ -139,6 +141,9 @@ func run(prompt, modelF string, scoutMode bool, dirF, session string, maxTurns i
 	}, client, toolset, stats)
 	if editor != nil {
 		loop.Editor = editor
+	}
+	if closer != nil {
+		loop.Closer = closer // post-close smart compaction (REPL: next mandate starts from the close ledger)
 	}
 	loop.Tail = tail
 

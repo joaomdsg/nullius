@@ -25,11 +25,12 @@ type Stats struct {
 	StartedAt time.Time  `json:"started_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
 
-	Denies    int `json:"denies"`
-	Routes    int `json:"routes"`
-	Evictions int `json:"evictions"`
-	ScoutRuns int `json:"scout_runs"`
-	Turns     int `json:"turns"`
+	Denies      int `json:"denies"`
+	Routes      int `json:"routes"`
+	Evictions   int `json:"evictions"`
+	Compactions int `json:"compactions"`
+	ScoutRuns   int `json:"scout_runs"`
+	Turns       int `json:"turns"`
 
 	Leader TierUsage `json:"leader"`
 	Scouts TierUsage `json:"scouts"`

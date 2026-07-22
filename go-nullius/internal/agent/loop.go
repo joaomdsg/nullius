@@ -52,6 +52,18 @@ type Editor interface {
 // stripped — the ledger lives only at the context edge.
 const TailPrefix = "≡NULLIUS-LEDGER≡\n"
 
+// CompactPrefix heads the post-close compact record: after a successful
+// close-out, the next Run starts from empty history carrying only the
+// close ledger verbatim — post-close is the one point compaction is
+// near-lossless, because the ledger IS the summary.
+const CompactPrefix = "≡NULLIUS-COMPACT≡\n"
+
+// Closer reports, consumably, that a close-out completed since the last
+// check (leader.CloseTool in production).
+type Closer interface {
+	ConsumeClosed() bool
+}
+
 type Loop struct {
 	cfg     Config
 	s       Streamer
@@ -62,6 +74,9 @@ type Loop struct {
 	OnEvent func(anthropic.MessageStreamEventUnion) // optional live rendering hook
 	Editor  Editor                                  // optional context editor
 	Tail    func() string                           // optional ledger tail, recited at the context edge
+	Closer  Closer                                  // optional close sentinel: arms post-close compaction
+
+	pendingCompact string // close ledger awaiting compaction at the next Run
 }
 
 func New(cfg Config, s Streamer, tools []Tool, stats *telemetry.Stats) *Loop {
@@ -82,6 +97,9 @@ func (l *Loop) Messages() []anthropic.MessageParam { return l.msgs }
 
 // Run feeds one user prompt through the loop until a terminal stop.
 func (l *Loop) Run(ctx context.Context, prompt string) (string, error) {
+	if l.pendingCompact != "" {
+		prompt = l.compact(prompt)
+	}
 	l.msgs = append(l.msgs, anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)))
 
 	for turn := 0; turn < l.cfg.MaxTurns; turn++ {
@@ -99,17 +117,21 @@ func (l *Loop) Run(ctx context.Context, prompt string) (string, error) {
 
 		msg, err := l.s.Stream(ctx, params, l.OnEvent)
 		if err != nil {
+			l.drainClose()
 			return "", err
 		}
 		l.record(msg)
 
 		if string(msg.StopReason) == StopContextWindowExceeded {
+			l.drainClose()
 			return textOf(msg), fmt.Errorf("context window exceeded: evict or start a fresh session")
 		}
 		switch msg.StopReason {
 		case anthropic.StopReasonRefusal:
+			l.drainClose()
 			return "", errors.New("model refused (stop_reason=refusal); rephrase or start a fresh session")
 		case anthropic.StopReasonMaxTokens:
+			l.drainClose()
 			return textOf(msg), fmt.Errorf("response truncated at max_tokens=%d", l.cfg.MaxTokens)
 		case anthropic.StopReasonPauseTurn:
 			// Long server-side turn paused; resend with the partial
@@ -121,10 +143,50 @@ func (l *Loop) Run(ctx context.Context, prompt string) (string, error) {
 			l.msgs = append(l.msgs, anthropic.NewUserMessage(l.runTools(ctx, msg)...))
 			continue
 		default: // end_turn, stop_sequence
-			return textOf(msg), nil
+			// Record the final assistant turn: without it, later Runs in
+			// the same session never see the model's own prior answers.
+			l.msgs = append(l.msgs, msg.ToParam())
+			out := textOf(msg)
+			// A clean end after a successful close arms compaction: the
+			// final report carries the close ledger — it survives, the
+			// rest of the transcript does not.
+			if l.Closer != nil && l.Closer.ConsumeClosed() {
+				l.pendingCompact = out
+			}
+			return out, nil
 		}
 	}
+	l.drainClose()
 	return "", fmt.Errorf("turn cap reached (%d API round-trips) without a terminal stop", l.cfg.MaxTurns)
+}
+
+// drainClose discards an armed close sentinel on error exits: the Run's
+// final output is not a close ledger, so compacting on it would replace
+// the transcript with garbage.
+func (l *Loop) drainClose() {
+	if l.Closer != nil {
+		l.Closer.ConsumeClosed()
+	}
+}
+
+// compact drops the whole transcript, resets editor residency (the
+// evicted content is gone — dup-reads must hit disk again), and folds the
+// surviving close ledger into the new mandate's prompt.
+func (l *Loop) compact(prompt string) string {
+	l.msgs = nil
+	if r, ok := l.Editor.(interface{ Reset() }); ok {
+		r.Reset()
+	}
+	record := l.pendingCompact
+	l.pendingCompact = ""
+	if l.stats != nil {
+		_ = l.stats.Update(func(st *telemetry.Stats) { st.Compactions++ })
+	}
+	return CompactPrefix +
+		"Prior mandate CLOSED. The transcript before this point was compacted away; " +
+		"the close ledger below is the only surviving record (verbatim). " +
+		"Nothing else is resident — re-read or re-scout anything you need.\n\n" +
+		record + "\n\n=== NEW MANDATE ===\n" + prompt
 }
 
 // runTools executes every tool_use block concurrently, preserving block

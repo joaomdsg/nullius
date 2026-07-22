@@ -78,6 +78,18 @@ func (e *Editor) Invalidate(path string) {
 	delete(e.readsByFP, path)
 }
 
+// Reset drops all editor state. Called at post-close compaction: the
+// transcript the residency registry describes no longer exists, so every
+// future read must hit disk again.
+func (e *Editor) Reset() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.ruled = map[string]bool{}
+	e.swept = map[string]bool{}
+	e.resident = map[string]bool{}
+	e.readsByFP = map[string][]string{}
+}
+
 // Sweep walks the message history and evicts tool results whose
 // supporting file has been ruled: read results by input path, bash
 // results whose command mentions the path. Returns evictions performed.

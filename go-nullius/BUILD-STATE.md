@@ -80,6 +80,20 @@ go.mod: module `go-nullius`, go 1.24, `github.com/anthropics/anthropic-sdk-go v1
 **ACCEPTANCE (live, 2026-07-22): internal/e2e seeded-defect fixture — real haiku hunters through the real binary
 caught BOTH seeded defects (lost-updates Inc, fault-survival Flush) as PRESENT with anchored quotes, 10.4s.**
 
+## DONE (layer 2 — smart post-close compaction, 2026-07-22)
+
+CloseTool arms a consumable sentinel (`ConsumeClosed`, atomic.Bool) on a clean close record only —
+REFUSED closes never arm it. On the Run's terminal end_turn the loop stashes the final report (the
+close ledger) as the pending compact record; the NEXT Run drops the whole transcript, resets the
+editor (residency must not survive — the content it points at is gone), and starts from ONE user
+message: `≡NULLIUS-COMPACT≡` header + close ledger verbatim + `=== NEW MANDATE ===` + new prompt.
+`Compactions` counter added to telemetry. Doctrine: post-close is the one near-lossless compaction
+point — the ledger IS the summary. Side fix: the loop now appends the final assistant turn on
+end_turn (previously multi-Run sessions lost the model's own prior answers).
+Pinned by: agent/compact_test.go (compact fires after close, NOT without; editor reset exactly once;
+ledger verbatim), leader/close_sentinel_test.go (arm-on-clean-only, consume-once), governor
+TestEditorReset.
+
 ## NEXT (layer 2, post-v0)
 - Exercise the live REFRESH path (first real 401) — client_id constant still ASSUMED until then.
 - Instrument the prevention-vs-compaction experiment: evictions counter is live; needs an A/B harness + bench arm.

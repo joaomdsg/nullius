@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/anthropics/anthropic-sdk-go"
 
@@ -22,7 +23,13 @@ var DefaultCloseCommands = []string{
 type CloseTool struct {
 	Ledger *ledger.Ledger
 	Scout  Dispatcher
+
+	closed atomic.Bool // set on a successful close record; consumed by the loop
 }
+
+// ConsumeClosed reports (once) that a close record came back clean since
+// the last check — the agent loop's post-close compaction sentinel.
+func (c *CloseTool) ConsumeClosed() bool { return c.closed.Swap(false) }
 
 func (c *CloseTool) Name() string { return "close" }
 
@@ -78,6 +85,7 @@ Report: per-command block with exit code, then the git records. No interpretatio
 		return "close: verification scout failed (fix and dispatch a fresh close): " + report, true
 	}
 
+	c.closed.Store(true)
 	return report + `
 
 --- CLOSE SKELETON (you rule on the record above; nonzero exits and unexplained surface changes re-enter the loop, never RISKS) ---
