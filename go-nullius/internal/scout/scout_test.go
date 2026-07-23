@@ -109,3 +109,35 @@ func TestScoutIdleKill(t *testing.T) {
 		t.Error("idle-kill took too long (watchdog not firing)")
 	}
 }
+
+// The dispatch-failure root cause: a hunt scout emits NOTHING to stdout
+// until its final report, so under load its silent-on-stdout stretch
+// exceeded the 90s watchdog and legitimate, working scouts were killed.
+// Fix: stderr activity (the child's per-turn trace heartbeat) must reset
+// the watchdog too. A child that streams progress to stderr — but not
+// stdout — for longer than Idle must SURVIVE and deliver its report.
+func TestScoutStderrActivityResetsWatchdog(t *testing.T) {
+	dir := t.TempDir()
+	// Silent on stdout for ~1s (> Idle=400ms), but heartbeats on stderr
+	// every 100ms — exactly the shape of a working multi-turn hunter.
+	bin := fakeBin(t, dir, `
+for i in $(seq 1 10); do echo "· turn $i → model" >&2; sleep 0.1; done
+echo "REPORT: 2 findings"`)
+	s := &Tool{Bin: bin, Dir: dir, Model: "haiku", NulliusDir: dir,
+		Idle: 400 * time.Millisecond, Backoff: 10 * time.Millisecond}
+	out, isErr := s.Run(context.Background(), input(t, "q"))
+	if isErr {
+		t.Fatalf("stderr-active child was wrongly killed: %q", out)
+	}
+	if !strings.Contains(out, "REPORT: 2 findings") {
+		t.Errorf("report lost: %q", out)
+	}
+}
+
+// The 90s default silently killed working scouts under local-model
+// latency; the floor must be well above a slow turn's time-to-first-token.
+func TestDefaultIdleFloor(t *testing.T) {
+	if DefaultIdle < 4*time.Minute {
+		t.Errorf("DefaultIdle=%s too low for local-model latency under load", DefaultIdle)
+	}
+}

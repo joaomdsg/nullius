@@ -28,7 +28,7 @@ import (
 const (
 	MaxReportBytes = 32 << 10
 	MaxStderrBytes = 4 << 10
-	DefaultIdle    = 90 * time.Second
+	DefaultIdle    = 5 * time.Minute // local models under load are slow to first token; watch stderr heartbeat, not just stdout
 	MaxAttempts    = 3
 )
 
@@ -37,11 +37,47 @@ var retryableRe = regexp.MustCompile(`(?i)\b429\b|\b529\b|overloaded|rate.?limit
 type Tool struct {
 	Bin        string // path to the go-nullius binary (os.Executable())
 	Dir        string // workspace dir for the child
-	Model      string // e.g. "haiku"
+	Mode       string // child subprocess mode flag: "scout" (default, read-only) or "craftsman" (write+test)
+	Model      string // default (fast) tier for bulk dispatches
+	SmartModel string // optional smart tier; dispatches may escalate to it
 	NulliusDir string // where stats files live (.nullius)
 	Stats      *telemetry.Stats
 	Idle       time.Duration // 0 → DefaultIdle
 	Backoff    time.Duration // 0 → 1s (grows ×4 per attempt)
+	Sem        chan struct{} // optional fast-tier concurrency limiter; nil = unbounded
+}
+
+// acquire takes a concurrency slot (no-op when unbounded), honoring ctx
+// cancellation so a blocked dispatch does not hang a shutting-down run.
+func (s *Tool) acquire(ctx context.Context) error {
+	if s.Sem == nil {
+		return nil
+	}
+	select {
+	case s.Sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// release frees a slot taken by acquire (no-op when unbounded).
+func (s *Tool) release() {
+	if s.Sem != nil {
+		<-s.Sem
+	}
+}
+
+// modelFor resolves a dispatch tier to a model alias. Bulk scouts default
+// to the fast tier; a dispatch may escalate to smart when SmartModel is
+// configured. Unknown/empty tier → the default (fast) model, and a smart
+// escalation with no smart tier configured degrades to fast — a dispatch
+// must never fail to resolve a model.
+func (s *Tool) modelFor(tier string) string {
+	if tier == "smart" && s.SmartModel != "" {
+		return s.SmartModel
+	}
+	return s.Model
 }
 
 func (s *Tool) Name() string { return "scout" }
@@ -50,11 +86,12 @@ func (s *Tool) Def() anthropic.ToolUnionParam {
 	return anthropic.ToolUnionParam{OfTool: &anthropic.ToolParam{
 		Name: "scout",
 		Description: anthropic.String(
-			"Dispatch a throwaway read-only scout (haiku) for ONE narrow objective: a codebase question, a heavy command rerun (builds/tests — report verbatim output + exit codes), a wide search, or the close-out record. The scout sees NONE of this conversation: the objective must carry exact paths, the question, boundaries, and the output format. Report is capped; ask for anchored quotes, not prose."),
+			"Dispatch a throwaway read-only scout (fast tier) for ONE narrow objective: a codebase question, a heavy command rerun (builds/tests — report verbatim output + exit codes), a wide search, or the close-out record. The scout sees NONE of this conversation: the objective must carry exact paths, the question, boundaries, and the output format. Report is capped; ask for anchored quotes, not prose. tier defaults to fast; set tier=smart ONLY to escalate a genuinely hard distillation to the smart model."),
 		InputSchema: anthropic.ToolInputSchemaParam{
 			Properties: map[string]any{
 				"objective":  map[string]any{"type": "string", "description": "the complete self-contained dispatch"},
 				"timeout_ms": map[string]any{"type": "integer", "description": "overall cap, default 600000"},
+				"tier":       map[string]any{"type": "string", "enum": []string{"fast", "smart"}, "description": "dispatch tier; default fast (bulk). smart escalates a hard distillation."},
 			},
 		},
 	}}
@@ -64,9 +101,10 @@ func (s *Tool) Run(ctx context.Context, input json.RawMessage) (string, bool) {
 	var in struct {
 		Objective string `json:"objective"`
 		TimeoutMs int    `json:"timeout_ms"`
+		Tier      string `json:"tier"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil || in.Objective == "" {
-		return "scout: invalid input: need {objective, timeout_ms?}", true
+		return "scout: invalid input: need {objective, timeout_ms?, tier?}", true
 	}
 	timeout := 10 * time.Minute
 	if in.TimeoutMs > 0 {
@@ -76,10 +114,11 @@ func (s *Tool) Run(ctx context.Context, input json.RawMessage) (string, bool) {
 	if backoff == 0 {
 		backoff = time.Second
 	}
+	model := s.modelFor(in.Tier)
 
 	var lastErr error
 	for attempt := 1; attempt <= MaxAttempts; attempt++ {
-		report, retryable, err := s.runOnce(ctx, in.Objective, timeout)
+		report, retryable, err := s.runOnce(ctx, in.Objective, model, timeout)
 		if err == nil {
 			return report, false
 		}
@@ -97,20 +136,44 @@ func (s *Tool) Run(ctx context.Context, input json.RawMessage) (string, bool) {
 	return fmt.Sprintf("scout: %d attempts exhausted: %v", MaxAttempts, lastErr), true
 }
 
-func (s *Tool) runOnce(ctx context.Context, objective string, timeout time.Duration) (report string, retryable bool, err error) {
+func (s *Tool) runOnce(ctx context.Context, objective, model string, timeout time.Duration) (report string, retryable bool, err error) {
+	// Bound concurrent fast-tier instances. Acquire against the parent ctx
+	// (a full pool while shutting down must abort, not hang); a blocked
+	// acquire is retryable so the dispatch is re-tried when a slot frees.
+	if err := s.acquire(ctx); err != nil {
+		return "", true, err
+	}
+	defer s.release()
+
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	childID := fmt.Sprintf("scout-%d-%d", os.Getpid(), time.Now().UnixNano())
+	mode := s.Mode
+	if mode == "" {
+		mode = "scout"
+	}
+	childID := fmt.Sprintf("%s-%d-%d", mode, os.Getpid(), time.Now().UnixNano())
 	cmd := exec.CommandContext(cctx, s.Bin,
-		"-p", objective, "--model", s.Model, "--scout", "--session", childID, "--dir", s.Dir)
+		"-p", objective, "--model", model, "--"+mode, "--session", childID, "--dir", s.Dir)
 	cmd.Dir = s.Dir
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	// Force the child's per-turn trace heartbeat on regardless of the
+	// parent's setting — the watchdog treats that stderr stream as the
+	// liveness signal (a hunter is stdout-silent until its final report).
+	cmd.Env = append(os.Environ(), "NULLIUS_TRACE=1")
+
+	// The watchdog fires on silence across BOTH pipes: a working scout
+	// streams nothing to stdout until its report, but traces every turn to
+	// stderr, so stderr activity must reset the timer too (the dispatch
+	// failures were legitimate scouts killed for stdout silence under load).
+	var lastActivity atomic.Int64
+	lastActivity.Store(time.Now().UnixNano())
+	poke := func() { lastActivity.Store(time.Now().UnixNano()) }
 
 	var errBuf cappedBuffer
 	errBuf.cap = MaxStderrBytes
-	cmd.Stderr = &errBuf
+	cmd.Stderr = &activityWriter{w: &errBuf, poke: poke}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -120,13 +183,11 @@ func (s *Tool) runOnce(ctx context.Context, objective string, timeout time.Durat
 		return "", false, err
 	}
 
-	// Idle watchdog: no stdout progress for Idle → kill the group.
+	// Idle watchdog: no progress on either pipe for Idle → kill the group.
 	idle := s.Idle
 	if idle == 0 {
 		idle = DefaultIdle
 	}
-	var lastActivity atomic.Int64
-	lastActivity.Store(time.Now().UnixNano())
 	var idleKilled atomic.Bool
 	watchdogDone := make(chan struct{})
 	go func() {
@@ -152,7 +213,7 @@ func (s *Tool) runOnce(ctx context.Context, objective string, timeout time.Durat
 	for {
 		n, rerr := stdout.Read(chunk)
 		if n > 0 {
-			lastActivity.Store(time.Now().UnixNano())
+			poke()
 			if out.Len() < MaxReportBytes {
 				room := MaxReportBytes - out.Len()
 				if n > room {
@@ -232,5 +293,23 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 }
 
 func (c *cappedBuffer) String() string { return c.buf.String() }
+
+// activityWriter forwards writes to an underlying writer and pokes a
+// liveness callback on each one, so stderr traffic (the child's per-turn
+// trace heartbeat) counts as progress for the idle watchdog. It never
+// drops bytes itself — capping is the wrapped writer's job.
+type activityWriter struct {
+	w    io.Writer
+	poke func()
+}
+
+func (a *activityWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		a.poke()
+	}
+	return a.w.Write(p)
+}
+
+var _ io.Writer = (*activityWriter)(nil)
 
 var _ io.Writer = (*cappedBuffer)(nil)

@@ -5,10 +5,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"sync"
 
@@ -17,9 +20,50 @@ import (
 	"go-nullius/internal/telemetry"
 )
 
+// traceOn gates the human-facing stderr turn-trace (NULLIUS_TRACE=1). It
+// is pure observability — off by default, no effect on the loop's logic
+// or output — so a watcher can follow what the leader is doing live.
+// traceW is the sink (os.Stderr in production; redirected in tests).
+var (
+	traceOn           = os.Getenv("NULLIUS_TRACE") != ""
+	traceW  io.Writer = os.Stderr
+)
+
+func trace(format string, a ...any) {
+	if traceOn {
+		fmt.Fprintf(traceW, "· "+format+"\n", a...)
+	}
+}
+
+// prettyTrace indents a tool-call JSON argument for the human trace,
+// aligning continuation lines under the "↳". Non-JSON (or a bare string)
+// falls back to the flattened one-liner. Capped so a wide dispatch or an
+// embedded file body can't flood the trace.
+func prettyTrace(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !json.Valid([]byte(raw)) || (!strings.HasPrefix(raw, "{") && !strings.HasPrefix(raw, "[")) {
+		return strings.ReplaceAll(raw, "\n", " ")
+	}
+	var buf bytes.Buffer
+	if err := json.Indent(&buf, []byte(raw), "    ", "  "); err != nil {
+		return strings.ReplaceAll(raw, "\n", " ")
+	}
+	out := buf.String()
+	const maxLen = 1600
+	if len(out) > maxLen {
+		out = out[:maxLen] + "\n    …"
+	}
+	return out
+}
+
 // StopContextWindowExceeded is not an SDK constant; the loop matches the
 // wire string (see BUILD-STATE.md).
 const StopContextWindowExceeded = "model_context_window_exceeded"
+
+// nudgeCap bounds how many times a single Run re-prompts a model that
+// ends its turn with mandate work still open — past it, the loop yields
+// rather than spinning to the turn cap on a model that will not continue.
+const nudgeCap = 6
 
 // Tool is one leader tool. Run returns the tool_result content and
 // whether it is an error result. Run must be safe for concurrent use —
@@ -40,6 +84,7 @@ type Config struct {
 	MaxTokens int64  // per-response cap
 	System    string // LEADER_RULES — frozen, cached
 	MaxTurns  int    // API round-trips per Run; 0 → 50
+	Effort    string // output_config.effort (low|medium|high|xhigh|max); "" → API default
 }
 
 // Editor evicts already-ruled tool results from history before a call
@@ -75,6 +120,11 @@ type Loop struct {
 	Editor  Editor                                  // optional context editor
 	Tail    func() string                           // optional ledger tail, recited at the context edge
 	Closer  Closer                                  // optional close sentinel: arms post-close compaction
+	// Unfinished, if set, returns a non-empty nudge when the model ends
+	// its turn with mandate work still open (unruled checklist items, no
+	// close). The loop re-prompts with the nudge instead of returning —
+	// bounded by nudgeCap so a model that keeps bailing cannot spin.
+	Unfinished func() string
 
 	pendingCompact string // close ledger awaiting compaction at the next Run
 }
@@ -102,6 +152,7 @@ func (l *Loop) Run(ctx context.Context, prompt string) (string, error) {
 	}
 	l.msgs = append(l.msgs, anthropic.NewUserMessage(anthropic.NewTextBlock(prompt)))
 
+	nudges := 0
 	for turn := 0; turn < l.cfg.MaxTurns; turn++ {
 		l.editContext()
 		params := anthropic.MessageNewParams{
@@ -114,13 +165,24 @@ func (l *Loop) Run(ctx context.Context, prompt string) (string, error) {
 			Messages: l.msgs,
 			Tools:    l.defs,
 		}
+		if l.cfg.Effort != "" {
+			params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(l.cfg.Effort)}
+		}
 
+		trace("turn %d → model (%d msgs resident)", turn+1, len(l.msgs))
 		msg, err := l.s.Stream(ctx, params, l.OnEvent)
 		if err != nil {
 			l.drainClose()
 			return "", err
 		}
 		l.record(msg)
+		if t := strings.TrimSpace(textOf(msg)); t != "" {
+			if len(t) > 300 {
+				t = t[:300] + "…"
+			}
+			trace("  say: %s", strings.ReplaceAll(t, "\n", " "))
+		}
+		trace("  stop=%s", msg.StopReason)
 
 		if string(msg.StopReason) == StopContextWindowExceeded {
 			l.drainClose()
@@ -147,6 +209,19 @@ func (l *Loop) Run(ctx context.Context, prompt string) (string, error) {
 			// the same session never see the model's own prior answers.
 			l.msgs = append(l.msgs, msg.ToParam())
 			out := textOf(msg)
+			// Guard against a model that ends the turn with mandate work
+			// still open (measured: qwen quit after dispatching the hunt,
+			// 33 items unruled). Re-prompt with the nudge instead of
+			// returning — bounded so a model that will not continue does
+			// not spin to the turn cap.
+			if l.Unfinished != nil && nudges < nudgeCap {
+				if nudge := l.Unfinished(); nudge != "" {
+					nudges++
+					trace("  end_turn with unfinished work — nudge %d/%d", nudges, nudgeCap)
+					l.msgs = append(l.msgs, anthropic.NewUserMessage(anthropic.NewTextBlock(nudge)))
+					continue
+				}
+			}
 			// A clean end after a successful close arms compaction: the
 			// final report carries the close ledger — it survives, the
 			// rest of the transcript does not.
@@ -200,6 +275,7 @@ func (l *Loop) runTools(ctx context.Context, msg *anthropic.Message) []anthropic
 	var calls []call
 	for _, b := range msg.Content {
 		if tu, ok := b.AsAny().(anthropic.ToolUseBlock); ok {
+			trace("  ↳ %s %s", tu.Name, prettyTrace(tu.JSON.Input.Raw()))
 			calls = append(calls, call{tu.ID, tu.Name, json.RawMessage(tu.JSON.Input.Raw())})
 		}
 	}

@@ -45,7 +45,7 @@ func (r *RuleTool) Run(_ context.Context, input json.RawMessage) (string, bool) 
 		return "rule: invalid input: need {key, status, detail, locator?, evidence?}", true
 	}
 
-	key, ruling, err := r.resolve(in.Key)
+	key, ruling, err := r.Ledger.Resolve(in.Key)
 	if err != nil {
 		return "rule: " + err.Error(), true
 	}
@@ -78,43 +78,16 @@ func (r *RuleTool) Run(_ context.Context, input json.RawMessage) (string, bool) 
 		r.Ed.MarkRuled(ruling.Finding.File)
 	}
 	return fmt.Sprintf("ruled [%s] %s (%s %s); open items remaining: %d",
-		key[:8], in.Status, ruling.Finding.File, ruling.Finding.Fn, countOpen(r.Ledger)), false
-}
-
-// resolve matches a full key or unique prefix against the ledger.
-func (r *RuleTool) resolve(prefix string) (string, ledger.Ruling, error) {
-	var hits []string
-	for k := range r.Ledger.Rulings {
-		if strings.HasPrefix(k, prefix) {
-			hits = append(hits, k)
-		}
-	}
-	switch len(hits) {
-	case 0:
-		return "", ledger.Ruling{}, fmt.Errorf("no checklist item matches key %q", prefix)
-	case 1:
-		return hits[0], r.Ledger.Rulings[hits[0]], nil
-	default:
-		return "", ledger.Ruling{}, fmt.Errorf("key %q is ambiguous (%d matches); use more characters", prefix, len(hits))
-	}
-}
-
-func countOpen(l *ledger.Ledger) int {
-	n := 0
-	for _, ru := range l.Rulings {
-		if ru.Status == ledger.StatusOpen {
-			n++
-		}
-	}
-	return n
+		key[:8], in.Status, ruling.Finding.File, ruling.Finding.Fn, r.Ledger.CountOpen()), false
 }
 
 // TailRender renders the open checklist for recitation at the context
 // edge — capped, mechanical, re-rendered every turn.
 func TailRender(l *ledger.Ledger) func() string {
 	return func() string {
+		rulings := l.Snapshot()
 		var keys []string
-		for k, ru := range l.Rulings {
+		for k, ru := range rulings {
 			if ru.Status == ledger.StatusOpen {
 				keys = append(keys, k)
 			}
@@ -130,7 +103,7 @@ func TailRender(l *ledger.Ledger) func() string {
 				fmt.Fprintf(&sb, "  … and %d more\n", len(keys)-40)
 				break
 			}
-			f := l.Rulings[k].Finding
+			f := rulings[k].Finding
 			fmt.Fprintf(&sb, "  [%s] %s %s %s (%s)\n", k[:8], f.Verdict, f.File, f.Fn, f.Lens)
 		}
 		return sb.String()

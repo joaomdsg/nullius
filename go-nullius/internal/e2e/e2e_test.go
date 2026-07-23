@@ -40,7 +40,7 @@ func TestSeededDefectsCaught(t *testing.T) {
 		t.Fatal(err)
 	}
 	sct := &scout.Tool{Bin: bin, Dir: fixture, Model: "haiku", NulliusDir: filepath.Join(work, ".nullius")}
-	hunt := &leader.HuntTool{Ledger: led, Scout: sct}
+	hunt := &leader.HuntTool{Ledger: led, Scout: sct, Dir: fixture}
 
 	caught := map[string]bool{}
 	for _, tc := range []struct{ lens, fn string }{
@@ -56,8 +56,10 @@ func TestSeededDefectsCaught(t *testing.T) {
 		if isErr {
 			t.Fatalf("hunt %s failed: %s", tc.lens, out)
 		}
+		// cc-nullius polarity: a seeded DEFECT surfaces as ABSENT (the
+		// protective mechanism is missing).
 		for _, ru := range led.Rulings {
-			if ru.Finding.Lens == tc.lens && ru.Finding.Verdict == "PRESENT" &&
+			if ru.Finding.Lens == tc.lens && ru.Finding.Verdict == "ABSENT" &&
 				strings.Contains(ru.Finding.Fn+ru.Finding.Detail+ru.Finding.SnippetHead, tc.fn) {
 				caught[tc.lens] = true
 			}
@@ -65,7 +67,7 @@ func TestSeededDefectsCaught(t *testing.T) {
 	}
 	for _, lens := range []string{"lost-updates", "fault-survival"} {
 		if !caught[lens] {
-			t.Errorf("seeded %s defect NOT caught as PRESENT — checklist out failed its acceptance", lens)
+			t.Errorf("seeded %s defect NOT caught as ABSENT — checklist out failed its acceptance", lens)
 		}
 	}
 }

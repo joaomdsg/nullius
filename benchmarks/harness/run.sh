@@ -58,6 +58,8 @@ LEAN_MODEL="${LEAN_MODEL:-claude-fable-5}"
 LEAN_EFFORT="${LEAN_EFFORT:-low}"
 PLAIN_MODEL="${PLAIN_MODEL:-${SOLO_MODEL:-claude-opus-4-8}}"
 PLAIN_EFFORT="${PLAIN_EFFORT:-${SOLO_EFFORT:-}}"   # empty = harness default effort
+GO_MODEL="${GO_MODEL:-opus}"     # go-nullius arm: binary model alias (haiku|sonnet|opus|fable) or full id
+GO_EFFORT="${GO_EFFORT-low}"     # go-nullius arm: output_config effort (single-dash: explicit "" stays empty; haiku rejects the param)
 # Seven arm names, six configs (see harness/README.md):
 #   nullius (alias fable-lean, its pre-rename label) is the live
 #   methodology. The byproxy* family is the archived v6 ceremony, kept
@@ -75,6 +77,7 @@ case "$ARM" in
   byproxy)           LABEL="${LABEL:-byproxy-${ORCH_MODEL#claude-}-$ORCH_EFFORT}";;
   byproxy-noaudit)   LABEL="${LABEL:-byproxy-noaudit-${ORCH_MODEL#claude-}-$ORCH_EFFORT}";;
   byproxy-nobuilder) LABEL="${LABEL:-byproxy-nobuilder-${ORCH_MODEL#claude-}-$ORCH_EFFORT}";;
+  go-nullius)        LABEL="${LABEL:-go-nullius-${GO_MODEL#claude-}-$GO_EFFORT}";;
   plain)             LABEL="${LABEL:-plain-${PLAIN_MODEL#claude-}${PLAIN_EFFORT:+-$PLAIN_EFFORT}}";;
   plain+report)      LABEL="${LABEL:-plain-report-${PLAIN_MODEL#claude-}${PLAIN_EFFORT:+-$PLAIN_EFFORT}}";;
   *) echo "arm must be nullius|nullius-rev1|nullius-rev2|cc-nullius|fable-lean|byproxy|byproxy-noaudit|byproxy-nobuilder|plain|plain+report" >&2; exit 2;;
@@ -280,6 +283,12 @@ EOF
 
 $CC_SKILL_BODY")
     RUN_PROMPT="$PROMPT$FULL_RISKS"
+  elif [[ "$ARM" == "go-nullius" ]]; then
+    # The ground-up Go agent (go-nullius/): its own /v1/messages loop with the
+    # nullius machinery compiled in — governor gate, editor eviction sweeps,
+    # hunt/rule/close tools, haiku scout subprocesses, post-close compaction.
+    # No claude CLI involved; execution and cost extraction branch below.
+    RUN_PROMPT="$PROMPT$FULL_RISKS"
   elif [[ "$ARM" == "plain" ]]; then
     CLAUDE_ARGS+=(--model "$PLAIN_MODEL")
     [[ -n "$PLAIN_EFFORT" ]] && CLAUDE_ARGS+=(--effort "$PLAIN_EFFORT")
@@ -305,7 +314,31 @@ $CC_SKILL_BODY")
   # uid:gid with a writable $HOME bind-mount, so files it writes into the
   # worktree stay host-owned and scoring/cleanup work unchanged. Default
   # bridge networking = outbound-only; the container is otherwise isolated.
-  if [[ "${CONTAINER:-0}" == "1" ]]; then
+  if [[ "$ARM" == "go-nullius" ]]; then
+    # Build once per rep from the repo tree; run headless in the worktree.
+    # Auth: the binary resolves CC subscription OAuth / ANTHROPIC_API_KEY
+    # itself (internal/auth precedence). stdout = final report only.
+    GN_BIN="$WTPARENT/go-nullius-bin"
+    (cd "$ROOT_DIR/go-nullius" && go build -o "$GN_BIN" ./cmd/go-nullius) \
+      || { echo "go-nullius build failed" >&2; exit 4; }
+    GN_SESSION="bench"
+    # Bounded 429 retry: the binary has no leader-level rate-limit retry
+    # (scouts do); a first-call 429 otherwise kills the rep with zero
+    # billed work. 5 attempts, 120s backoff, keyed on the stderr message.
+    GN_ATTEMPT=1
+    while :; do
+      GN_RC=0
+      (cd "$WT" && timeout "$TIMEOUT_S" "$GN_BIN" -p "$RUN_PROMPT" \
+          --model "$GO_MODEL" --effort "$GO_EFFORT" --dir "$WT" --session "$GN_SESSION") \
+        > "$RAW" 2>"$RAW.stderr" || GN_RC=$?
+      if [[ $GN_RC -ne 0 ]] && grep -qiE '429|rate_limit' "$RAW.stderr" && [[ $GN_ATTEMPT -lt 5 ]]; then
+        echo "  go-nullius hit rate limit (attempt $GN_ATTEMPT/5), retrying in 120s..." >&2
+        GN_ATTEMPT=$((GN_ATTEMPT+1)); sleep 120; continue
+      fi
+      break
+    done
+    (exit "$GN_RC")   # RC=$? below must see the binary's real exit, not break's 0
+  elif [[ "${CONTAINER:-0}" == "1" ]]; then
     # Auth source: prefer a namespaced credential so the harness never needs a
     # bare key in your shell (which would hijack your interactive Claude Code
     # session). Two credential kinds, each mapped to the env var the container
@@ -365,7 +398,7 @@ $CC_SKILL_BODY")
   echo "[$TASK_NAME/$ARM rep $rep] scoring independently..." >&2
   # RAW is now a stream-json event log (one JSON object per line). The last
   # type=result event carries the summary fields; extract it for parsing.
-  RESULT_OBJ="$(grep '"type":"result"' "$RAW" 2>/dev/null | tail -1)"
+  RESULT_OBJ="$(grep '"type":"result"' "$RAW" 2>/dev/null | tail -1 || true)"
   [[ -z "$RESULT_OBJ" ]] && RESULT_OBJ='{}'
   # Count real subagent dispatches from the parent's tool_use events — the
   # only trustworthy proof the byproxy treatment actually ran. Total Agent/
@@ -405,9 +438,9 @@ $CC_SKILL_BODY")
   # then diff/count with the harness-injected .claude/ excluded — the agents and
   # skills an arm copied in are not the run's own work.
   git -C "$WT" add -A >/dev/null 2>&1 || true
-  git -C "$WT" diff --cached -- . ':(exclude).claude' > "$RAW.diff" 2>/dev/null || true
-  DIFFSTAT="$(git -C "$WT" diff --cached --stat -- . ':(exclude).claude' 2>/dev/null | tail -1 || true)"
-  UNTRACKED="$(git -C "$WT" diff --cached --diff-filter=A --name-only -- . ':(exclude).claude' 2>/dev/null | grep -c . || true)"
+  git -C "$WT" diff --cached -- . ':(exclude).claude' ':(exclude).nullius' > "$RAW.diff" 2>/dev/null || true
+  DIFFSTAT="$(git -C "$WT" diff --cached --stat -- . ':(exclude).claude' ':(exclude).nullius' 2>/dev/null | tail -1 || true)"
+  UNTRACKED="$(git -C "$WT" diff --cached --diff-filter=A --name-only -- . ':(exclude).claude' ':(exclude).nullius' 2>/dev/null | grep -c . || true)"
 
   # Blind disclosure judge (see harness/README.md): opt-in via JUDGE=1
   # so default/cheap runs skip the extra LLM call. Judges report+diff blind to
@@ -450,6 +483,50 @@ $CC_SKILL_BODY")
   # compaction is a system message with subtype compact_boundary.
   COMPACTIONS="$(grep -c '"subtype":[[:space:]]*"compact_boundary"' "$RAW" 2>/dev/null || true)"
   COMPACTIONS="${COMPACTIONS:-0}"
+
+  # go-nullius arm: RAW is the plain-text final report (no stream-json), so
+  # the extractions above all came up empty. The binary's stats file is the
+  # economics record: token counts per tier (leader = GO_MODEL, scouts =
+  # haiku), priced here at USD/Mtok with cache_read = 0.1x and cache_write =
+  # 1.25x the input price.
+  if [[ "$ARM" == "go-nullius" ]]; then
+    cp "$RAW" "$REPORT" 2>/dev/null || true
+    GN_STATS="$WT/.nullius/stats-$GN_SESSION.json"
+    case "$GO_MODEL" in
+      haiku)  GN_LM="claude-haiku-4-5";  GN_IN=1;  GN_OUT=5;;
+      sonnet) GN_LM="claude-sonnet-5";   GN_IN=3;  GN_OUT=15;;
+      opus)   GN_LM="claude-opus-4-8";   GN_IN=5;  GN_OUT=25;;
+      fable)  GN_LM="claude-fable-5";    GN_IN=10; GN_OUT=50;;
+      *)      GN_LM="$GO_MODEL";         GN_IN=5;  GN_OUT=25;
+              echo "warn: unknown GO_MODEL '$GO_MODEL', pricing as opus-4-8" >&2;;
+    esac
+    if [[ -r "$GN_STATS" ]]; then
+      COST="$(jq --argjson i "$GN_IN" --argjson o "$GN_OUT" '
+        (.leader.input_tokens*$i + .leader.output_tokens*$o
+         + .leader.cache_read_tokens*($i*0.1) + .leader.cache_creation_tokens*($i*1.25)
+         + .scouts.input_tokens*1 + .scouts.output_tokens*5
+         + .scouts.cache_read_tokens*0.1 + .scouts.cache_creation_tokens*1.25)
+        / 1e6 * 10000 | round / 10000' "$GN_STATS")"
+      USAGE_BY_MODEL="$(jq -c --arg lm "$GN_LM" '{
+        ($lm): {in:.leader.input_tokens, out:.leader.output_tokens,
+                cache_read:.leader.cache_read_tokens, cache_write:.leader.cache_creation_tokens},
+        "claude-haiku-4-5-scouts": {in:.scouts.input_tokens, out:.scouts.output_tokens,
+                cache_read:.scouts.cache_read_tokens, cache_write:.scouts.cache_creation_tokens}
+        }' "$GN_STATS")"
+      CACHE_TOTALS="$(jq -c '[.[]] | {in:(map(.in)|add // 0), out:(map(.out)|add // 0),
+          cache_read:(map(.cache_read)|add // 0), cache_write:(map(.cache_write)|add // 0)}
+        | . + {hit_rate:(if (.cache_read + .cache_write + .in) > 0
+            then ((.cache_read / (.cache_read + .cache_write + .in)) * 1000 | round / 1000)
+            else null end)}' <<<"$USAGE_BY_MODEL")"
+      TURNS="$(jq '.turns' "$GN_STATS")"
+      DISPATCH_N="$(jq '.scout_runs' "$GN_STATS")"
+      EXPLORER_N="$DISPATCH_N"
+      COMPACTIONS="$(jq '.compactions' "$GN_STATS")"
+      COST_BY_MODEL="$(jq -n --arg lm "$GN_LM" --argjson c "$COST" '{($lm): $c}')"
+    else
+      echo "warn: go-nullius stats file missing ($GN_STATS) — cost unrecorded" >&2
+    fi
+  fi
 
   jq -n -c \
     --arg task "$TASK_NAME" --arg arm "$LABEL" --arg stamp "$STAMP" \
