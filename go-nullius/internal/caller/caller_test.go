@@ -265,6 +265,105 @@ func TestAskTransportRetriesOn429(t *testing.T) {
 	}
 }
 
+// grammarOf extracts the "grammar" field from a recorded request body ("" if absent).
+func grammarOf(t *testing.T, raw []byte) string {
+	t.Helper()
+	m := decodeReq(t, raw)
+	g, _ := m["grammar"].(string)
+	return g
+}
+
+func TestAskRetriesUnconstrainedOnGrammarCrash(t *testing.T) {
+	var bodies [][]byte
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, b)
+		calls++
+		if calls == 1 {
+			// llama.cpp's intermittent server-side grammar crash.
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"Unexpected empty grammar stack"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{"message": map[string]any{"content": `{"stands":true,"refuting_line":null}`}}},
+		})
+	}))
+	defer srv.Close()
+	c := newTestCaller(srv.URL, srv.URL)
+
+	var v verdict
+	if err := c.Ask(context.Background(), Fast, "p", "root ::= object", &v); err != nil {
+		t.Fatalf("grammar crash must recover via unconstrained retry: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("want exactly 2 calls (crash + unconstrained retry), got %d", calls)
+	}
+	if g := grammarOf(t, bodies[0]); g != "root ::= object" {
+		t.Fatalf("first call must carry the grammar, got %q", g)
+	}
+	if g := grammarOf(t, bodies[1]); g != "" {
+		t.Fatalf("retry must be UNCONSTRAINED (empty grammar), got %q", g)
+	}
+	if !v.Stands {
+		t.Fatal("decoded verdict wrong")
+	}
+}
+
+func TestAskGrammarCrashDoesNotBackoffLoop(t *testing.T) {
+	// A persistent grammar crash: the constrained call fast-fails (1 hit), then the
+	// unconstrained retries fall through the generic 5xx backoff path (transportRetryMax).
+	// The point: the CONSTRAINED grammar is tried exactly once, never in a backoff loop.
+	var constrainedCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if grammarOf(t, b) != "" {
+			constrainedCalls++
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"grammar stack empty"}`))
+	}))
+	defer srv.Close()
+	c := newTestCaller(srv.URL, srv.URL)
+
+	var v verdict
+	if err := c.Ask(context.Background(), Fast, "p", "root ::= object", &v); err == nil {
+		t.Fatal("persistent crash must return an error")
+	}
+	if constrainedCalls != 1 {
+		t.Fatalf("constrained grammar must be tried exactly once, got %d", constrainedCalls)
+	}
+}
+
+func TestAskGenericServerErrorKeepsGrammar(t *testing.T) {
+	// A 5xx WITHOUT "grammar" in the body is NOT a grammar crash — it must take the normal
+	// backoff-retry path with the grammar intact, never silently drop the constraint.
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, b)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"internal server error"}`))
+	}))
+	defer srv.Close()
+	c := newTestCaller(srv.URL, srv.URL)
+
+	var v verdict
+	if err := c.Ask(context.Background(), Fast, "p", "root ::= object", &v); err == nil {
+		t.Fatal("persistent 500 must error")
+	}
+	if len(bodies) != transportRetryMax {
+		t.Fatalf("generic 500 must use %d backoff retries, got %d", transportRetryMax, len(bodies))
+	}
+	for i, b := range bodies {
+		if g := grammarOf(t, b); g != "root ::= object" {
+			t.Fatalf("call %d dropped the grammar on a non-grammar 500: %q", i, g)
+		}
+	}
+}
+
 func TestAskContextCancel(t *testing.T) {
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -66,6 +66,13 @@ type Caller interface {
 // errors.Is and apply their schema-typed fallback.
 var ErrExhausted = errors.New("caller: schema not satisfied after retries")
 
+// ErrGrammarCrash marks a DETERMINISTIC server-side grammar failure — llama.cpp
+// intermittently 5xx's on a valid GBNF with "grammar" in the error body (observed:
+// "Unexpected empty grammar stack"). Retrying the SAME grammar crashes identically, so
+// backing off is wasted; post fails fast with this and Ask retries ONCE unconstrained
+// (strict-decode still enforces the schema). Consumers detect it with errors.Is.
+var ErrGrammarCrash = errors.New("caller: server-side grammar crash")
+
 const (
 	// defaultMaxTokens is verdict-sized (design: verdict 400 + headroom).
 	// Consumers raise it per schema via WithMaxTokens (plan 1500, report 3000).
@@ -176,11 +183,21 @@ func (c *HTTPCaller) Ask(ctx context.Context, tier Tier, prompt string, grammar 
 	}
 
 	msgs := []chatMessage{{Role: "user", Content: prompt}}
+	g := string(grammar)
 	var lastErr error
 	for attempt := 0; attempt <= parseRetries; attempt++ {
-		content, err := c.post(ctx, ep, msgs, string(grammar), cfg.maxTokens)
+		content, err := c.post(ctx, ep, msgs, g, cfg.maxTokens)
 		if err != nil {
-			return err // transport / context error: re-asking cannot help
+			if g != "" && errors.Is(err, ErrGrammarCrash) {
+				// Server-side grammar crash is deterministic: drop the grammar and retry
+				// unconstrained. strict-decode below still enforces the schema, and g stays
+				// "" for the remaining parseRetries so we never re-trip the same crash.
+				g = ""
+				content, err = c.post(ctx, ep, msgs, g, cfg.maxTokens)
+			}
+			if err != nil {
+				return err // transport / context error: re-asking cannot help
+			}
 		}
 		dec := json.NewDecoder(strings.NewReader(content))
 		dec.DisallowUnknownFields()
@@ -254,6 +271,10 @@ func (c *HTTPCaller) post(ctx context.Context, ep Endpoint, msgs []chatMessage, 
 					return msg.ReasoningContent, nil // grammar-constrained reasoning model
 				}
 				return msg.Content, nil
+			case resp.StatusCode >= 500 && grammar != "" && strings.Contains(strings.ToLower(string(data)), "grammar"):
+				// Deterministic grammar crash: retrying the same grammar will crash the
+				// same way, so fail fast — Ask retries unconstrained. Not retried here.
+				return "", fmt.Errorf("%w: transport %d: %s", ErrGrammarCrash, resp.StatusCode, snip(data))
 			case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
 				lastErr = fmt.Errorf("caller: transport %d: %s", resp.StatusCode, snip(data))
 			default:
