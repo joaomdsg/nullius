@@ -28,11 +28,19 @@ var noLog logf = func(Phase, string, ...any) {}
 type fakeCaller struct {
 	orient, gate, recon string
 	custom              func(prompt string) (string, bool)
+	// customTier sees the tier too — used to drive per-tier replies (e.g. pair-discrimination
+	// fast vs smart escalation). Checked before custom; ok=false falls through.
+	customTier func(tier caller.Tier, prompt string) (string, bool)
 }
 
 func (f fakeCaller) Ask(ctx context.Context, tier caller.Tier, prompt string, grammar caller.GBNF, out any, opts ...caller.AskOption) error {
 	var payload string
-	if f.custom != nil {
+	if f.customTier != nil {
+		if p, ok := f.customTier(tier, prompt); ok {
+			payload = p
+		}
+	}
+	if payload == "" && f.custom != nil {
 		if p, ok := f.custom(prompt); ok {
 			payload = p
 		}

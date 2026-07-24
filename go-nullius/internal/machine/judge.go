@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"go-nullius/internal/caller"
@@ -110,6 +111,150 @@ func (m *Machine) judgeAndCorroborate(ctx context.Context, task string, c enumer
 	conf.Confirmed = true
 	log(PhaseCorroborate, "%s:%d CONFIRMED", c.File, c.Line)
 	return conf
+}
+
+// maxSmartEscalations bounds how many pair-discriminations may escalate to the smart tier
+// per run (design: smart escalation ≤3/run) — the smart tier is the flaky/expensive one, so
+// its use is rationed; exhausting the budget leaves the remaining ties unconfirmed (a RISK).
+const maxSmartEscalations = 3
+
+const pairMaxTokens = 1500
+
+// PairOut is the contrastive discrimination verdict over two structurally-identical sites A
+// and B that per-candidate Judge could not split (D2 vs FP). Exactly one is expected UNSAFE;
+// each verdict must cite the line where its decisive (scope-carrying) value originates.
+type PairOut struct {
+	A            string `json:"a"` // SAFE | UNSAFE
+	B            string `json:"b"`
+	AScopeSource int    `json:"a_scope_source_line"`
+	BScopeSource int    `json:"b_scope_source_line"`
+}
+
+// pairDiscriminate is Corroborate filter 2. Per-candidate Judge is blind to context: two sites
+// with an identical shape (e.g. two calls that differ only in which arg carries scope) both
+// come back CANT_TELL. This pass groups the still-unresolved CANT_TELL candidates by lens and,
+// for each same-lens pair, asks ONE contrastive question showing BOTH windows: which is safe,
+// and cite where each site's decisive value originates. A differentiated answer (one SAFE, one
+// UNSAFE) whose UNSAFE side cites a valid origin line CONFIRMS the UNSAFE site and clears the
+// other. An undifferentiated answer escalates the pair to the smart tier (budget ≤3/run); a
+// still-undifferentiated smart answer leaves both unconfirmed (fail-closed → RISK).
+func (m *Machine) pairDiscriminate(ctx context.Context, task string, res *Result, log logf) {
+	byLens := map[string][]int{}
+	for i := range res.Judged {
+		c := &res.Judged[i]
+		if c.Confirmed || c.Refuted {
+			continue
+		}
+		if strings.ToUpper(strings.TrimSpace(c.Judge.Answer)) != "CANT_TELL" {
+			continue
+		}
+		byLens[c.Candidate.Lens] = append(byLens[c.Candidate.Lens], i)
+	}
+	lenses := make([]string, 0, len(byLens))
+	for l := range byLens {
+		lenses = append(lenses, l)
+	}
+	sort.Strings(lenses) // deterministic escalation-budget consumption
+	escalations := 0
+	for _, lens := range lenses {
+		idxs := byLens[lens]
+		for k := 0; k+1 < len(idxs); k += 2 {
+			m.discriminatePair(ctx, task, res, idxs[k], idxs[k+1], &escalations, log)
+		}
+	}
+}
+
+func (m *Machine) discriminatePair(ctx context.Context, task string, res *Result, ia, ib int, escalations *int, log logf) {
+	ca, cb := res.Judged[ia].Candidate, res.Judged[ib].Candidate
+	la, err := readLines(ca.File)
+	if err != nil {
+		return
+	}
+	lb, err := readLines(cb.File)
+	if err != nil {
+		return
+	}
+	winA, sa, ea := enclosingWindow(ca.File, la, ca.Line)
+	winB, sb, eb := enclosingWindow(cb.File, lb, cb.Line)
+	prompt := pairPrompt(task, ca, winA, sa, ea, cb, winB, sb, eb)
+
+	var p PairOut
+	if err := m.Caller.Ask(ctx, m.Fast, prompt, caller.GBNF(jsonGrammar), &p, caller.WithMaxTokens(pairMaxTokens)); err == nil {
+		if m.applyPair(res, ia, ib, la, sa, ea, lb, sb, eb, p, "fast", log) {
+			return
+		}
+	} else {
+		log(PhaseCorroborate, "pair-discrimination fast FALLBACK (%v)", err)
+	}
+
+	// Undifferentiated (or fast failure) → escalate to the smart tier, budget permitting.
+	if *escalations >= maxSmartEscalations {
+		log(PhaseCorroborate, "pair %s:%d/%s:%d unresolved; smart-escalation budget (%d) exhausted → both stay unconfirmed",
+			ca.File, ca.Line, cb.File, cb.Line, maxSmartEscalations)
+		return
+	}
+	*escalations++
+	var ps PairOut
+	if err := m.Caller.Ask(ctx, m.Smart, prompt, caller.GBNF(jsonGrammar), &ps, caller.WithMaxTokens(pairMaxTokens)); err != nil {
+		log(PhaseCorroborate, "pair-discrimination smart FALLBACK (%v) → both stay unconfirmed", err)
+		return
+	}
+	if !m.applyPair(res, ia, ib, la, sa, ea, lb, sb, eb, ps, "smart", log) {
+		log(PhaseCorroborate, "pair %s:%d/%s:%d still undifferentiated after smart → both stay unconfirmed", ca.File, ca.Line, cb.File, cb.Line)
+	}
+}
+
+// applyPair resolves a differentiated pair verdict: exactly one UNSAFE (whose origin line is
+// valid) is CONFIRMED, the other cleared. It returns false (no mutation) when the verdict is
+// undifferentiated (equal, or a non-SAFE/UNSAFE token) or the UNSAFE side cites no valid line
+// — a bare "this one is unsafe" without a cited origin has discriminated nothing.
+func (m *Machine) applyPair(res *Result, ia, ib int, la []string, sa, ea int, lb []string, sb, eb int, p PairOut, tier string, log logf) bool {
+	a := strings.ToUpper(strings.TrimSpace(p.A))
+	b := strings.ToUpper(strings.TrimSpace(p.B))
+	safeOK := func(v string) bool { return v == "SAFE" || v == "UNSAFE" }
+	if !safeOK(a) || !safeOK(b) || a == b {
+		return false
+	}
+	var ui, si, uSrc, us, ue int
+	var uLines []string
+	if a == "UNSAFE" {
+		ui, si, uSrc, uLines, us, ue = ia, ib, p.AScopeSource, la, sa, ea
+	} else {
+		ui, si, uSrc, uLines, us, ue = ib, ia, p.BScopeSource, lb, sb, eb
+	}
+	if !validLine(uLines, us, ue, uSrc) {
+		return false // no cited origin for the unsafe call → nothing proven
+	}
+	res.Judged[ui].Confirmed = true
+	res.Judged[ui].LineValid = true
+	res.Judged[ui].Note = fmt.Sprintf("confirmed by pair-discrimination (%s tier), scope source line %d", tier, uSrc)
+	res.Judged[si].Note = "cleared by pair-discrimination (" + tier + " tier)"
+	log(PhaseCorroborate, "pair-discrimination (%s): %s:%d UNSAFE→CONFIRMED, %s:%d SAFE→cleared",
+		tier, res.Judged[ui].Candidate.File, res.Judged[ui].Candidate.Line,
+		res.Judged[si].Candidate.File, res.Judged[si].Candidate.Line)
+	return true
+}
+
+func pairPrompt(task string, a enumerate.Candidate, winA string, sa, ea int, b enumerate.Candidate, winB string, sb, eb int) string {
+	return `You are the PAIR-DISCRIMINATION phase. Two sites matched the SAME lens and are structurally
+identical, so judging them in isolation was ambiguous. Typically exactly one is a real defect and the
+other is safe, distinguished by WHICH value/argument carries the relevant scope and WHERE it originates.
+Compare A and B and decide each "SAFE" or "UNSAFE". For each, cite the line where its decisive value
+originates (A's line in [` + itoa(sa) + `,` + itoa(ea) + `], B's in [` + itoa(sb) + `,` + itoa(eb) + `]).
+Reply with ONLY a JSON object:
+{"a":"SAFE"|"UNSAFE","b":"SAFE"|"UNSAFE","a_scope_source_line":<int>,"b_scope_source_line":<int>}
+
+TASK:
+` + task + `
+
+LENS: ` + a.Lens + ` (mechanism: ` + a.Mechanism + `)
+
+SITE A: ` + a.File + `:` + itoa(a.Line) + ` in function ` + a.Fn + `
+CODE A (line: text):
+` + winA + `
+SITE B: ` + b.File + `:` + itoa(b.Line) + ` in function ` + b.Fn + `
+CODE B (line: text):
+` + winB
 }
 
 func judgePrompt(task string, c enumerate.Candidate, window string, start, end int) string {

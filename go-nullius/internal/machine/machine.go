@@ -248,6 +248,10 @@ func (m *Machine) Run(ctx context.Context, md Mandate) (*Result, error) {
 		conf := m.judgeAndCorroborate(ctx, md.Task, c, log)
 		res.Judged = append(res.Judged, conf)
 	}
+	// Corroborate filter 2 — pair-discrimination over same-lens CANT_TELL ties, with a
+	// bounded smart escalation. Runs BEFORE Confirmed() so pair-confirmed defects flow into
+	// promotion and Plan like any other. A no-op when no lens has ≥2 unresolved candidates.
+	m.pairDiscriminate(ctx, md.Task, res, log)
 	confirmed := res.Confirmed()
 	log(PhaseCorroborate, "%d/%d candidate(s) CONFIRMED after Judge + Corroborate", len(confirmed), len(res.Judged))
 
@@ -282,9 +286,9 @@ func (m *Machine) Run(ctx context.Context, md Mandate) (*Result, error) {
 		log(PhaseDrain, "draining %d plan(s) via craftsman in %s", len(res.Plans), md.Dir)
 		res.Drained = m.drain(ctx, md.Dir, res.Plans, log)
 		log(PhaseDrain, "%d/%d plan(s) DONE", countDone(res.Drained), len(res.Drained))
-		// AUDIT — re-run the FROZEN lens set over the (now-modified) files; residual
-		// candidates are reported. The bounded audit→judge re-entry loop is a step-7 add.
-		m.audit(ctx, md, baseline, accepted, log)
+		// AUDIT — re-hunt the frozen lens set over the modified files; re-judge and drain any
+		// FRESH target a fix introduced or exposed, bounded by a round cap and a seen-set.
+		m.auditReentry(ctx, md, md.Task, baseline, accepted, res, log)
 	} else {
 		log(PhaseDrain, "SKELETON: no craftsman/dir — %d plan(s) reported, not written", len(res.Plans))
 		log(PhaseAudit, "skipped (no drain)")
@@ -335,7 +339,7 @@ func dedupeConfirmed(cs []Confirmation) []Confirmation {
 	seen := map[string]bool{}
 	var out []Confirmation
 	for _, c := range cs {
-		k := c.Candidate.File + "\x00" + c.Candidate.Fn + "\x00" + c.Candidate.Lens
+		k := targetKey(c.Candidate)
 		if seen[k] {
 			continue
 		}
@@ -355,18 +359,78 @@ func countDone(ds []DrainResult) int {
 	return n
 }
 
-// audit re-runs the frozen lens set over the (possibly modified) terrain files and reports
-// what remains — a fix that removed the flagged shape leaves nothing; residuals are surfaced.
-func (m *Machine) audit(ctx context.Context, md Mandate, baseline, accepted []enumerate.Lens, log logf) {
-	er, err := enumerate.Run(md.Files, baseline, accepted)
-	if err != nil {
-		log(PhaseAudit, "re-hunt failed: %v", err)
-		return
+// maxAuditRounds bounds how many times Audit re-hunts→re-judges→drains after the first pass —
+// enough to catch a defect a fix introduced or exposed, without risking an oscillation. The
+// seen-set below is the real termination guarantee (each target is processed at most once); the
+// round cap is a hard backstop.
+const maxAuditRounds = 2
+
+// targetKey identifies a fix target by file+function+lens. It is stable across the line shifts
+// a fix causes, so a target ruled once is never re-processed even as its line numbers move — the
+// key of the seen-set that bounds the re-entry loop. (Same key as dedupeConfirmed.)
+func targetKey(c enumerate.Candidate) string {
+	return c.File + "\x00" + c.Fn + "\x00" + c.Lens
+}
+
+// auditReentry re-hunts the frozen lens set over the modified files and, for any FRESH target
+// (a file+fn+lens not already ruled this run — one a fix introduced or exposed), re-judges it
+// and drains newly-confirmed defects, looping up to maxAuditRounds. Termination is guaranteed by
+// a monotonically-growing seen-set (each target processed at most once) under a hard round cap.
+// A residual at an ALREADY-ruled target (the fix did not remove the flagged shape) is surfaced
+// as an unresolved residual, never re-drained — drain already tried and reverted, so re-attempt
+// cannot help; it is a RISK for the close to report.
+func (m *Machine) auditReentry(ctx context.Context, md Mandate, task string, baseline, accepted []enumerate.Lens, res *Result, log logf) {
+	seen := map[string]bool{}
+	for _, j := range res.Judged {
+		seen[targetKey(j.Candidate)] = true
 	}
-	log(PhaseAudit, "frozen-lens re-hunt over %d file(s): %d candidate(s) remain", len(md.Files), len(er.Candidates))
-	for _, c := range er.Candidates {
-		log(PhaseAudit, "residual: %s:%d [%s] fn=%s", c.File, c.Line, c.Lens, c.Fn)
+	for round := 1; round <= maxAuditRounds; round++ {
+		er, err := enumerate.Run(md.Files, baseline, accepted)
+		if err != nil {
+			log(PhaseAudit, "round %d re-hunt failed: %v", round, err)
+			return
+		}
+		var fresh []enumerate.Candidate
+		residualAtRuled := 0
+		for _, c := range er.Candidates {
+			if seen[targetKey(c)] {
+				residualAtRuled++
+				continue
+			}
+			fresh = append(fresh, c)
+		}
+		log(PhaseAudit, "round %d: %d candidate(s) remain (%d fresh, %d at already-ruled targets)", round, len(er.Candidates), len(fresh), residualAtRuled)
+		for _, c := range er.Candidates {
+			if seen[targetKey(c)] {
+				log(PhaseAudit, "residual (fix incomplete, RISK): %s:%d [%s] fn=%s", c.File, c.Line, c.Lens, c.Fn)
+			}
+		}
+		if len(fresh) == 0 {
+			return
+		}
+		var newlyConfirmed []Confirmation
+		for _, c := range fresh {
+			seen[targetKey(c)] = true
+			conf := m.judgeAndCorroborate(ctx, task, c, log)
+			res.Judged = append(res.Judged, conf)
+			if conf.Confirmed {
+				newlyConfirmed = append(newlyConfirmed, conf)
+			}
+		}
+		if len(newlyConfirmed) == 0 {
+			log(PhaseAudit, "round %d: %d fresh site(s), none confirmed → audit clean", round, len(fresh))
+			return
+		}
+		targets := dedupeConfirmed(newlyConfirmed)
+		var plans []FixPlan
+		for _, c := range targets {
+			plans = append(plans, m.planFix(ctx, task, c, log))
+		}
+		res.Plans = append(res.Plans, plans...)
+		log(PhaseAudit, "round %d: %d fresh defect(s) confirmed → draining %d plan(s)", round, len(newlyConfirmed), len(plans))
+		res.Drained = append(res.Drained, m.drain(ctx, md.Dir, plans, log)...)
 	}
+	log(PhaseAudit, "reached audit round cap (%d); any remaining fresh targets deferred to a future run", maxAuditRounds)
 }
 
 // normalizeMode enforces the fail-closed three-way gate. The mechanical backstop is
