@@ -71,5 +71,24 @@ func DefaultRegistry() *Registry {
 	r.RegisterBaseline("go", "bool-tautology", func(*gts.Language) (Lens, error) {
 		return NewWalkLens("bool-tautology", "tautology", BoolTautology), nil
 	})
+	// lock-without-release: a mutex acquired with no matching release in the same function
+	// (deadlock class). Task-agnostic — keyed on the sync.(RW)Mutex API only.
+	r.RegisterBaseline("go", "lock-without-release", func(*gts.Language) (Lens, error) {
+		return NewWalkLens("lock-without-release", "missing-unlock", LockWithoutRelease), nil
+	})
+	// write-to-guarded-field-without-lock: a method writes a receiver field of a struct that
+	// has a sync.(RW)Mutex, without acquiring a lock (missing-serialization class).
+	r.RegisterBaseline("go", "unguarded-field-write", func(*gts.Language) (Lens, error) {
+		return NewWalkLens("unguarded-field-write", "missing-lock", WriteToGuardedFieldWithoutLock), nil
+	})
+	// NilLiteralArg (nil-literal-arg) is built and unit-tested but DELIBERATELY NOT registered
+	// as an always-on baseline yet. Measured (vialite bench run3, 2026-07-24): it surfaces the
+	// right contrastive candidates, but the D2-vs-FP discrimination that must decide safe-vs-leak
+	// does NOT engage — pair-discrimination only fires on CANT_TELL ties, and the solo fast judge
+	// (lacking a callee-summary telling it which arg position is a scope) confirmed the INVERSE:
+	// it ruled legitimate app-scoped `broadcastRender(nil,...)` calls DEFECT while missing the
+	// real session-scoped leak. A lens that confidently confirms FPs is worse than a miss (drain
+	// would "fix" correct code). Register it only once nil-arg verdicts are forced through
+	// pair-discrimination / fed the callee-summary (see DESIGN "REMAINING").
 	return r
 }

@@ -114,3 +114,35 @@ remaining 3 baseline lenses (clear-before-use, nil-literal-arg,
 write-to-guarded-field) will add durable coverage for the sse / sess-leak /
 action classes. 292.9s (slower than run 1's 77.7s — recon on the flaky smart
 endpoint dominated).
+
+## Re-run after increment 2 (2026-07-24) — the nil-arg finding
+
+Added `lock-without-release`, `unguarded-field-write`, `nil-literal-arg` (all
+GENERALIZED, no vialite-specific shapes). Recon derived 0 usable lenses again
+(flaky smart); 4 candidates from baseline, 4/4 confirmed. 310.9s.
+
+- **over-wake (#2) caught again** (`bool-tautology`, deterministic).
+- `lock-without-release` and `unguarded-field-write` flagged NOTHING in the
+  framework — correctly: it locks properly, and the action defect retains
+  `ctx.mu.Lock` (a general "no Lock in method" lens honestly can't see the
+  *specific* missing `actionMu`; overfitting to it would be cheating).
+- **`nil-literal-arg` regressed precision: 3 confident FPs.** It flagged
+  `appval.go`/`render.go` `broadcastRender(nil,…)` and the solo judge confirmed
+  them DEFECT — but those are LEGITIMATE app-scoped broadcasts (nil = broadcast
+  to all, intended). The real session-scoped leak (statesess.go) was missed. The
+  judge confirmed the *inverse*.
+
+**Finding:** `nil-literal-arg` surfaces the right contrastive candidates, but the
+D2 safe-vs-leak discrimination never engaged — pair-discrimination only fires on
+CANT_TELL ties, and the solo fast judge, with no callee-summary telling it which
+arg is a scope, just rules "nil scope = bad." A lens that confidently confirms FPs
+is worse than a miss (drain would "fix" correct code), so `nil-literal-arg` is
+**held out of the always-on baseline** (code + unit test kept) until nil-arg
+verdicts are forced through pair-discrimination or fed the callee-summary.
+
+**Net after increment 2 (shipped baseline = stmt-after-return, bool-tautology,
+lock-without-release, unguarded-field-write):** durable recall 1/6 (over-wake),
+precision 1/1 on the shipped lenses; the two new lock/guard lenses add real
+general coverage that simply had nothing to bite in this codebase. The D2 classes
+(sess-leak, and the recall for the others) are gated on the discrimination unlock,
+not on more lenses.
