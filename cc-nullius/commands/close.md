@@ -8,7 +8,7 @@ Close out the current nullius task:
    REFUTED / out-of-mandate). A confirmed defect left as a disclosure is
    a failed run — fix it before closing. A silently dropped suspect is a
    failed close.
-2. Dispatch ONE `nullius-scout` to produce the close record: **verify** —
+2. Dispatch ONE `scout` to produce the close record: **verify** —
    full test suite + build + vet + the project's linters,
    `-race`/equivalent where concurrency was touched, decisive output
    VERBATIM; **surface** — `git diff` against the base revision, every

@@ -3,7 +3,7 @@
 //
 // The main-thread context is the bill: every absorbed token is re-paid every
 // following turn. Starves the ORCHESTRATOR; subagents pass untouched except
-// nullius-craftsman (tests-first + boundary gates).
+// craftsman (tests-first + boundary gates).
 //
 // Main thread: Grep/Glob/Web*/MCP-bulk denied (delegate). Read: no whole reads
 // over NULLIUS_MAX_READ lines, no duplicate reads (path+range+mtime ledger).
@@ -24,7 +24,7 @@
 // (subagents reach MCP tools via ToolSearch); NULLIUS_MCP_OK=1 disables.
 // Telemetry: denies/rewrites/dispatches counted per session in
 // $TMPDIR/nullius-stats-<session_id>; surfaced by /nullius:diet status.
-import { readFileSync, writeFileSync, statSync, existsSync, appendFileSync } from "node:fs";
+import { readFileSync, writeFileSync, statSync, existsSync, appendFileSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -80,6 +80,36 @@ const isTestPath = (p) =>
 const isSourcePath = (p) =>
   /\.(go|ts|tsx|js|jsx|mjs|cjs|py|rs|java|c|cc|cpp|h|hpp|cs|rb|php|kt|swift|scala|ex|exs)$/.test(p || "");
 
+// Newest mtime among test files under root — TOOL-AGNOSTIC test-touch detection.
+// A *_test file written by a Bash heredoc/redirect advances this past the ratchet
+// watermark and resets it, exactly as an Edit/Write to a test path does; the hook
+// fires per tool call and cannot see a turn's whole batch, so freshness-by-mtime is
+// the robust proxy for "a test was touched this turn". Bounded walk (skips VCS/dep/
+// build dirs + all dot-dirs, caps entries) so a huge repo can't stall the hook.
+// go-nullius's staleness Tracker, in miniature.
+const SKIP_DIRS = new Set([
+  "node_modules", "vendor", "dist", "build", "target",
+  "__pycache__", "coverage", "bin", "obj"]);
+function newestTestMtime(root) {
+  let newest = 0, budget = 20000;
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    let ents;
+    try { ents = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      if (--budget <= 0) return newest;
+      const full = join(dir, e.name);
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name) && !e.name.startsWith(".")) stack.push(full);
+      } else if (e.isFile() && isTestPath(full)) {
+        try { const m = statSync(full).mtimeMs; if (m > newest) newest = m; } catch {}
+      }
+    }
+  }
+  return newest;
+}
+
 // Names declared exported in oldS and absent from newS — an edit that drops
 // public surface. (Measured: a run scored zero after a "cleanup" deleted a
 // public method only hidden consumers used.)
@@ -111,11 +141,11 @@ function droppedExports(oldS, newS) {
 // agent_id, not agent_type, discriminates subagent calls: agent_type can be
 // set on the MAIN thread in `claude --agent` sessions (per CLI docs).
 // endsWith, not ===: marketplace install namespaces the agent as
-// "nullius:nullius-craftsman" while the harness copies it bare as
-// "nullius-craftsman" — a `===` silently fell through to the subagent
+// "nullius:craftsman" while the harness copies it bare as
+// "craftsman" — a `===` silently fell through to the subagent
 // passthrough below and left the craftsman UNGOVERNED under plugin install
-// (verified 2026-07-19: dumped payload agent_type "nullius:nullius-scout").
-const craftsman = /(^|:)nullius-craftsman$/.test(data.agent_type || "");
+// (verified 2026-07-19: dumped payload agent_type "nullius:scout").
+const craftsman = /(^|:)craftsman$/.test(data.agent_type || "");
 // craftsman gates require agent_id: a craftsman WITHOUT one is not a dispatched
 // subagent but a main-thread orchestrator (e.g. a `nullius-build` nested
 // session), which correctly gets full main-thread governance below, not the
@@ -173,32 +203,45 @@ const isMcpBulk = /^mcp__/.test(tool) &&
   /(read|fetch|search|list|query|download|export|get_|history|logs|messages|threads|files|content|html|eval)/i.test(tool);
 if (isMcpBulk && process.env.NULLIUS_MCP_OK === "1") bump("escape:mcp_ok");
 if (isMcpBulk && process.env.NULLIUS_MCP_OK !== "1") deny(
-  "nullius: MCP bulk lands unbounded in your context. Dispatch nullius-scout " +
+  "nullius: MCP bulk lands unbounded in your context. Dispatch scout " +
   "with the question; it can reach the same MCP tools and returns a capped, " +
   "anchored report. (NULLIUS_MCP_OK=1 or /nullius:quick to disable this gate.)");
 
 if (tool === "Grep" || tool === "Glob") deny(
-  "nullius: sweeps are bulk. Dispatch nullius-scout or nullius-lens-hunter " +
+  "nullius: sweeps are bulk. Dispatch scout or lens-hunter " +
   "(Agent tool), batched in parallel when independent.");
 
 if (tool === "WebFetch" || tool === "WebSearch") deny(
-  "nullius: dispatch nullius-scout with the URL/question; it returns a capped, " +
+  "nullius: dispatch scout with the URL/question; it returns a capped, " +
   "anchored report.");
 
-// Tests-first ratchet state: [source edits since last test-touch].
+// Tests-first ratchet state: { n: source edits since the last test touch,
+// w: newest test-file mtime at that reset }. The watermark makes the reset
+// tool-agnostic AND idempotent-on-retry: a test written by ANY tool advances
+// newestTestMtime past w and resets n on the next source edit, so a denied
+// batch's edits pass verbatim once the test lands (no re-shaping needed).
 const ratchet = join(tmpdir(), `nullius-ratchet-${data.session_id || "nosession"}`);
-const rGet = () => { try { return parseInt(readFileSync(ratchet, "utf8"), 10) || 0; } catch { return 0; } };
-const rSet = (n) => { try { writeFileSync(ratchet, String(n)); } catch {} };
+const rLoad = () => { try {
+  const o = JSON.parse(readFileSync(ratchet, "utf8"));
+  return typeof o === "number" ? { n: o, w: 0 } : { n: o.n || 0, w: o.w || 0 };
+} catch { return null; } };
+const rSave = (s) => { try { writeFileSync(ratchet, JSON.stringify(s)); } catch {} };
 
 if (tool === "Edit" || tool === "Write") {
   const path = ti.file_path || "";
-  if (isTestPath(path)) { rSet(0); allow(); }               // tests: any size, resets ratchet
-  if (tool === "Write" && !isSourcePath(path)) allow();     // scaffolding/config/docs
+  const newestTest = newestTestMtime(cwd);
+  let st = rLoad();
+  if (st === null) st = { n: 0, w: newestTest };        // seed: only touches AFTER now count
+  if (newestTest > st.w) st = { n: 0, w: newestTest };  // a test was touched by SOME tool since w
 
-  if (isSourcePath(path) && rGet() >= EDITS_PER_TEST) deny(
-    `nullius tests-first ratchet: ${rGet()} source edits since the last test touch. ` +
-    "Write/extend the test that pins the behavior you just changed (a 3-line fix " +
-    "that skips a lifecycle path is how regressions ship), then continue.");
+  if (isTestPath(path)) { rSave({ n: 0, w: st.w }); allow(); }        // tests: any size, resets
+  if (tool === "Write" && !isSourcePath(path)) { rSave(st); allow(); } // scaffolding/config/docs
+
+  if (isSourcePath(path) && st.n >= EDITS_PER_TEST) { rSave(st); deny(
+    `nullius tests-first ratchet: ${st.n} source edits since the last test touch. ` +
+    "Write/extend the test that pins the behavior you changed, THEN re-send these exact " +
+    "edits unchanged — a test touch by ANY tool (an Edit/Write to a *_test/spec file, or a " +
+    "Bash heredoc/redirect writing one) resets the ratchet, so the blocked edits pass on retry."); }
 
   // NO size cap on Write/Edit. A PreToolUse hook fires AFTER the model has
   // generated the tool call — the file content is already spent output tokens
@@ -211,7 +254,8 @@ if (tool === "Edit" || tool === "Write") {
   // by 10-100x anyway. The delegate decision lives in the doctrine, made
   // BEFORE generation. The boundary gate (dropped exports) stays — it catches
   // a regression, which is worth its one wasted generation.
-  if (isSourcePath(path)) rSet(rGet() + 1);
+  if (isSourcePath(path)) { rSave({ n: st.n + 1, w: st.w }); allow(); }
+  rSave(st);                                              // non-source Edit: persist any watermark bump
   allow();
 }
 
@@ -238,7 +282,7 @@ if (tool === "Read") {
   const bounded = ti.pages != null || (ti.limit != null && ti.limit <= MAX_READ);
   if (!bounded && lines != null && lines > MAX_READ) deny(
     `nullius: whole read of ${basename(path)} (${lines} lines > ${MAX_READ}). Read the ` +
-    "decisive region (offset+limit) or dispatch nullius-scout to distill it.");
+    "decisive region (offset+limit) or dispatch scout to distill it.");
 
   const ledger = join(tmpdir(), `nullius-ledger-${data.session_id || "nosession"}`);
   const key = `${path}|${ti.offset ?? ""}|${ti.limit ?? ""}|${ti.pages ?? ""}|${mtime}`;
@@ -259,7 +303,7 @@ if (tool === "Bash") {
 
   const HEAVY_RE = /\b(go\s+(test|build|vet)|npm\s+(test|run|ci|install)|pnpm|yarn|pytest|vitest|jest|bun\s+(test|install|run)|deno\s+(test|task|check)|pip3?\s+install|uv\s+(sync|run|pip)|cargo\s+(test|build|check|clippy)|make\b|tsc\b|eslint|ruff|mypy|mvn\b|gradle|dotnet\s+(test|build)|ctest)\b/;
   if (!quick && HEAVY_RE.test(cmd)) deny(
-    "nullius: builds/tests flood the orchestrator. Dispatch nullius-scout " +
+    "nullius: builds/tests flood the orchestrator. Dispatch scout " +
     "(quick check or close-out record). #nullius:ok only if it truly must run here.");
 
   // grep -r must match in ANY short-flag cluster (`-rn`, `-rln`, `-n -r`) and
@@ -268,7 +312,7 @@ if (tool === "Bash") {
   const WIDE_RE = /\brg\b|\bag\b|find\s+[./]|grep\b[^|;&]*\s-[a-zA-Z]*[rR][a-zA-Z]*\b|grep\b[^|;&]*\s--recursive\b/;
   const BOUND_RE = /\|\s*(tail|head)\b|\bwc\b|-l\b|--count|--files-with-matches|-m\s*\d/;
   if (!quick && WIDE_RE.test(cmd) && !BOUND_RE.test(cmd)) deny(
-    "nullius: unbounded wide search. Delegate to nullius-scout or bound it " +
+    "nullius: unbounded wide search. Delegate to scout or bound it " +
     "(| head -n 20 / -l / --count).");
 
   // Trailing `;` would make `{ x; ; }` a syntax error; a `#` comment would

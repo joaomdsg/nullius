@@ -167,17 +167,58 @@ test("tests-first ratchet: 4 source edits then deny until a test touch", () => {
   assert.equal(edit("main.go").decision, null, "ratchet reset by test touch");
 });
 
+test("ratchet resets on a test file touched by ANY tool (Bash heredoc), not just Edit/Write (#13)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nullius-ratchet-bash-"));
+  const s = sid();
+  const edit = () => run({ cwd: dir, session_id: s, tool_name: "Edit",
+    tool_input: { file_path: join(dir, "main.go"), old_string: "a", new_string: "b" } });
+  for (let i = 0; i < 4; i++) assert.equal(edit().decision, null, `edit ${i}`);
+  assert.equal(edit().decision?.permissionDecision, "deny", "ratchet trips at the limit");
+  // A test written by Bash heredoc: the hook never saw an Edit/Write to it, but its
+  // fresh mtime must still reset the ratchet (was tool-blind before).
+  writeFileSync(join(dir, "main_test.go"), "package p\nfunc TestX(t *testing.T){}\n");
+  assert.equal(edit().decision, null, "a Bash-written test file must reset the ratchet");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("an unchanged PRE-EXISTING test file does not perpetually reset the ratchet (#12 watermark)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nullius-ratchet-pre-"));
+  writeFileSync(join(dir, "old_test.go"), "package p\n");
+  const past = Date.now() / 1000 - 3600;         // backdate: clearly in the past
+  utimesSync(join(dir, "old_test.go"), past, past);
+  const s = sid();
+  const edit = () => run({ cwd: dir, session_id: s, tool_name: "Edit",
+    tool_input: { file_path: join(dir, "main.go"), old_string: "a", new_string: "b" } });
+  for (let i = 0; i < 4; i++) assert.equal(edit().decision, null, `edit ${i}`);
+  assert.equal(edit().decision?.permissionDecision, "deny",
+    "presence of a stale test file must NOT keep resetting the ratchet — only a fresh touch does");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("ratchet denial names the idempotent retry — test touch resets, re-send blocked edits (#14)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nullius-ratchet-msg-"));
+  const s = sid();
+  const edit = () => run({ cwd: dir, session_id: s, tool_name: "Edit",
+    tool_input: { file_path: join(dir, "main.go"), old_string: "a", new_string: "b" } });
+  for (let i = 0; i < 4; i++) edit();
+  const { decision } = edit();
+  assert.equal(decision.permissionDecision, "deny");
+  assert.match(decision.permissionDecisionReason, /re-?send/i, "must tell the model to re-send the edits");
+  assert.match(decision.permissionDecisionReason, /any tool|Bash/i, "must state the reset is tool-agnostic");
+  rmSync(dir, { recursive: true, force: true });
+});
+
 // ---- Subagents -----------------------------------------------------------------
 
 test("non-craftsman subagents pass untouched", () => {
-  const { decision } = run({ agent_type: "nullius-scout", agent_id: "a1",
+  const { decision } = run({ agent_type: "scout", agent_id: "a1",
     tool_name: "Grep", tool_input: { pattern: "x" } });
   assert.equal(decision, null);
 });
 
 test("craftsman: source edit denied before a test touch, allowed after; marker is session-scoped", () => {
   const s = sid();
-  const src = { session_id: s, agent_type: "nullius-craftsman", agent_id: "craft1",
+  const src = { session_id: s, agent_type: "craftsman", agent_id: "craft1",
     tool_name: "Edit", tool_input: { file_path: join(CWD, "impl.go"), old_string: "a", new_string: "b" } };
   assert.equal(run(src).decision?.permissionDecision, "deny");
   assert.equal(run({ ...src, tool_input: { file_path: join(CWD, "impl_test.go"),
@@ -189,7 +230,7 @@ test("craftsman: source edit denied before a test touch, allowed after; marker i
 });
 
 test("craftsman boundary gate: dropping a symbol from an export {...} re-export list is denied", () => {
-  const { decision } = run({ agent_type: "nullius-craftsman", agent_id: "c10",
+  const { decision } = run({ agent_type: "craftsman", agent_id: "c10",
     tool_name: "Edit", tool_input: { file_path: join(CWD, "index.ts"),
       old_string: "export { foo, bar as baz }", new_string: "export { foo }" } });
   assert.equal(decision?.permissionDecision, "deny");
@@ -197,7 +238,7 @@ test("craftsman boundary gate: dropping a symbol from an export {...} re-export 
 });
 
 test("craftsman boundary gate: dropping an exported symbol is denied", () => {
-  const { decision } = run({ agent_type: "nullius-craftsman", agent_id: "c9",
+  const { decision } = run({ agent_type: "craftsman", agent_id: "c9",
     tool_name: "Edit", tool_input: { file_path: join(CWD, "api.go"),
       old_string: "func AppendToHead(x int) {}", new_string: "// gone" } });
   assert.equal(decision?.permissionDecision, "deny");
@@ -207,7 +248,7 @@ test("craftsman boundary gate: dropping an exported symbol is denied", () => {
 test("craftsman boundary gate: RENAMING an exported symbol is denied (was: substring `includes` cleared it)", () => {
   // old `AppendToHead` renamed to `AppendToHeadV2`: substring matching found
   // "AppendToHead" inside "AppendToHeadV2" and wrongly cleared the drop.
-  const { decision } = run({ agent_type: "nullius-craftsman", agent_id: "c11",
+  const { decision } = run({ agent_type: "craftsman", agent_id: "c11",
     tool_name: "Edit", tool_input: { file_path: join(CWD, "api.go"),
       old_string: "func AppendToHead(x int) {}",
       new_string: "func AppendToHeadV2(x int) {}" } });
@@ -218,17 +259,17 @@ test("craftsman boundary gate: RENAMING an exported symbol is denied (was: subst
 test("craftsman boundary gate: a whole-file WRITE dropping an exported symbol is denied (was: Write skipped the gate)", () => {
   const f = join(CWD, "boundary_write.go");
   writeFileSync(f, "package p\nfunc ExportedThing() {}\n");
-  const { decision } = run({ agent_type: "nullius-craftsman", agent_id: "c12",
+  const { decision } = run({ agent_type: "craftsman", agent_id: "c12",
     tool_name: "Write", tool_input: { file_path: f, content: "package p\n// gone\n" } });
   assert.equal(decision?.permissionDecision, "deny");
   assert.match(decision.permissionDecisionReason, /ExportedThing/);
 });
 
 test("craftsman gate binds under the PLUGIN-NAMESPACED agent_type (was: === missed the prefix)", () => {
-  // marketplace install delivers agent_type "nullius:nullius-craftsman";
-  // a `=== nullius-craftsman` check fell through to the subagent passthrough
+  // marketplace install delivers agent_type "nullius:craftsman";
+  // a `=== craftsman` check fell through to the subagent passthrough
   // and left the craftsman ungoverned. endsWith/regex must catch both forms.
-  for (const at of ["nullius-craftsman", "nullius:nullius-craftsman"]) {
+  for (const at of ["craftsman", "nullius:craftsman"]) {
     const { decision } = run({ agent_type: at, agent_id: "c-" + at,
       tool_name: "Edit", tool_input: { file_path: join(CWD, "impl.go"),
         old_string: "a", new_string: "b" } });
@@ -239,7 +280,7 @@ test("craftsman gate binds under the PLUGIN-NAMESPACED agent_type (was: === miss
 });
 
 test("a NON-craftsman namespaced subagent still passes untouched", () => {
-  const { decision } = run({ agent_type: "nullius:nullius-scout", agent_id: "s1",
+  const { decision } = run({ agent_type: "nullius:scout", agent_id: "s1",
     tool_name: "Edit", tool_input: { file_path: join(CWD, "x.go"),
       old_string: "a", new_string: "b" } });
   assert.equal(decision, null);
@@ -313,11 +354,11 @@ test("stats: denies and dispatches are counted per session", () => {
   const s = sid();
   run({ session_id: s, tool_name: "Grep", tool_input: { pattern: "x" } });
   run({ session_id: s, tool_name: "Agent",
-    tool_input: { subagent_type: "nullius-scout", prompt: "x" } });
+    tool_input: { subagent_type: "scout", prompt: "x" } });
   const stats = JSON.parse(readFileSync(join(tmpdir(), `nullius-stats-${s}`), "utf8"));
   assert.equal(stats.denies, 1);
   assert.equal(stats.dispatches, 1);
-  assert.equal(stats["dispatch:nullius-scout"], 1);
+  assert.equal(stats["dispatch:scout"], 1);
 });
 
 // ---- SessionStart doctrine nudge ------------------------------------------------
@@ -330,7 +371,7 @@ test("SessionStart hook injects the doctrine pointer as additionalContext", () =
   });
   const o = JSON.parse(res.stdout).hookSpecificOutput;
   assert.equal(o.hookEventName, "SessionStart");
-  assert.match(o.additionalContext, /invoke the `nullius:nullius` skill/);
+  assert.match(o.additionalContext, /invoke the `nullius:starve` skill/);
   assert.match(o.additionalContext, /two-turn hunt/);
   // a pointer, not the full body — keep it cheap
   assert.ok(o.additionalContext.length < 700, "nudge must stay a pointer, not the doctrine");

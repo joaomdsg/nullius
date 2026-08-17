@@ -8,7 +8,7 @@ Run the nullius hunt phase over: $ARGUMENTS (if empty, the current task's mandat
    scout to validate it first: `git diff --stat <stamped-commit>..HEAD`
    against the map's recorded commit — unchanged files keep their map
    entries; only the drift gets re-scouted. A stale or absent map means
-   a full map: dispatch 2-3 `nullius-scout` agents in ONE
+   a full map: dispatch 2-3 `scout` agents in ONE
    parallel message to map the mandate precisely: every mutating
    entrypoint, shared mutable state, fan-out/broadcast site,
    queue/buffer/retry state, background sweep/TTL, lock, and error path.
@@ -41,7 +41,7 @@ Run the nullius hunt phase over: $ARGUMENTS (if empty, the current task's mandat
    checklist update — no one-question turns — and flush at the close
    ratification. Headless: self-answer
    into ASSUMED.
-4. **Turn B — lenses** (FULL mode): dispatch `nullius-lens-hunter` agents in ONE
+4. **Turn B — lenses** (FULL mode): dispatch `lens-hunter` agents in ONE
    parallel message, one per lens, each carrying the exact targets turn A
    named for it and the strict V| output grammar. Terrain sharpens aim,
    never coverage: a core lens (serialization, fault-survival,

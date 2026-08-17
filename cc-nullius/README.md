@@ -37,7 +37,7 @@ the growth term directly.
     craftsman hands (design decisions escalate up) and ALLOWED on the main
     thread at any size — boundary-shaping is the orchestrator's. This gate
     catches a *regression*, so its one wasted generation is worth it;
-  - craftsman tests-first gate: inside nullius-craftsman, the first
+  - craftsman tests-first gate: inside craftsman, the first
     Edit/Write must touch a test file or SOURCE edits are denied
     (scaffolding/config/docs are exempt — nothing to test).
 
@@ -52,10 +52,10 @@ the growth term directly.
     in `$TMPDIR/nullius-stats-<session>`, reported by `/nullius:diet status`.
   - Escapes: `#nullius:ok` in a command, `.nullius-quick` (diet-lite, 4h),
     `.nullius-off` file, `NULLIUS_OFF=1`.
-- **Agents**: `nullius-scout` (haiku — absorption, terrain maps, and the
+- **Agents**: `scout` (haiku — absorption, terrain maps, and the
   close-out record: full suite + linters + exported-surface diff, ≤40-line
-  anchored testimony), `nullius-lens-hunter` (haiku — one lens over named
-  targets, strict PRESENT/ABSENT/AMBIGUOUS grammar), `nullius-craftsman`
+  anchored testimony), `lens-hunter` (haiku — one lens over named
+  targets, strict PRESENT/ABSENT/AMBIGUOUS grammar), `craftsman`
   (sonnet — last resort for one pinned indivisible change, tests-first,
   public-API surface frozen). There is no judge tier: verification is
   absorption; every ruling is the orchestrator's.

@@ -1,6 +1,6 @@
 ---
-name: nullius
-description: Starved-orchestrator operating doctrine — apply on every nontrivial coding task with this plugin active. Governs delegation to nullius-scout/nullius-lens-hunter/nullius-craftsman, the two-turn hunt, checklist discipline, mandate boundaries, scout close-out.
+name: starve
+description: Starved-orchestrator operating doctrine — apply on every nontrivial coding task with this plugin active. Governs delegation to scout/lens-hunter/craftsman, the two-turn hunt, checklist discipline, mandate boundaries, scout close-out.
 ---
 
 # nullius — the starved orchestrator
@@ -17,10 +17,10 @@ are the methodology — obey the steering reason, never fight it.
 
 ## Division of labor
 
-- `nullius-scout` (haiku): ALL reading/searching/research, terrain mapping,
+- `scout` (haiku): ALL reading/searching/research, terrain mapping,
   and the close-out rerun. One narrow dispatch each.
-- `nullius-lens-hunter` (haiku): one lens over named targets → PRESENT/ABSENT/AMBIGUOUS + quotes.
-- `nullius-craftsman` (sonnet): LAST RESORT for one genuinely large,
+- `lens-hunter` (haiku): one lens over named targets → PRESENT/ABSENT/AMBIGUOUS + quotes.
+- `craftsman` (sonnet): LAST RESORT for one genuinely large,
   self-contained build. **Intelligence fans out; writes stay yours.**
   The delegate-or-write decision is YOURS to make BEFORE you generate
   the code — never a size reflex, and the governor no longer caps write
@@ -202,7 +202,14 @@ agents absorb, hunt, build, verify — never decide.
    Lenses: serialization (lock in the entrypoint's OWN body) · fault
    survival (anything cleared/overwritten before its write, send, or
    flush is CONFIRMED — queues, buffers, retry state) · scope confinement
-   (scope arg at every fan-out) · wake predicates (can it be false? reads
+   (at EVERY fan-out/broadcast CALL SITE, quote the scope ARGUMENT actually
+   passed and match it to the enclosing state's scope tier — a nil/app-wide
+   scope on a session- or tenant-scoped write IS the finding; a downstream
+   filter (a revs/monotone gate, a key-scoping, a tailer check) is NOT the
+   confinement, and confirming one PRESENT is the measured way this leak
+   ships — 2026-07-24, statesess `broadcastRender(ctx, nil, …)` missed
+   because the hunt verified the revs gate instead of the call's scope arg;
+   each fan-out call is its own obligation) · wake predicates (can it be false? reads
    under the writer's lock?) · lost updates · lifecycle races (sweeps/TTL
    vs live use; shutdown vs dispose) · swallowed errors · resource
    release. Feature work in FULL mode: build the skeleton first, then

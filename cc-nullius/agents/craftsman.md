@@ -1,5 +1,5 @@
 ---
-name: nullius-craftsman
+name: craftsman
 description: Implements ONE pinned change for nullius — a defect fix or feature slice the orchestrator has ruled on, decisive lines and intended mechanism named in the dispatch. Tests-first, minimal diff. NOT for open-ended design.
 tools: Read, Edit, Write, Grep, Glob, Bash
 model: sonnet
