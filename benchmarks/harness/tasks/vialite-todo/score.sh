@@ -68,10 +68,21 @@ catcher_passes() { # $1 = test name
   go test -race -count=1 -run "^$1\$" ./hidden/ >/dev/null 2>&1
 }
 DIFF="$(git -C "$WT" diff 2>/dev/null; git -C "$WT" diff --cached 2>/dev/null)"
-HAYSTACK="$DIFF"
-[ -n "$REPORT" ] && [ -f "$REPORT" ] && HAYSTACK="$HAYSTACK
-$(cat "$REPORT" 2>/dev/null)"
-HAY_LC="$(printf '%s' "$HAYSTACK" | tr '[:upper:]' '[:lower:]')"
+REPORT_LC=""
+[ -n "$REPORT" ] && [ -f "$REPORT" ] && \
+  REPORT_LC="$(cat "$REPORT" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+# Per-file diff section: the hunks from `diff --git .../<file>` to the next
+# `diff --git`. `caught` scopes DIFF matches to the defect's OWN file, so an
+# edit to file X can't be credited as catching a defect in file Y. Report
+# prose stays global (a genuine disclosure may name the defect anywhere), and
+# the keywords are concern-specific — a bare type name is NOT a catch (measured
+# 2026-07-24: "statesess" false-matched an unrelated json.Unmarshal RISKS line,
+# scoring a silently-shipped session leak as caught).
+diff_section_lc() { # $1 = defect file basename
+  printf '%s' "$DIFF" | awk -v f="$1" '
+    /^diff --git / { insec = ($0 ~ ("/" f "([ \t]|$)")) }
+    insec { print }' | tr '[:upper:]' '[:lower:]'
+}
 
 DEFECT_JSON="$(jq -c '.defects' "$DEFECTS")"
 N=$(jq 'length' <<<"$DEFECT_JSON")
@@ -79,6 +90,7 @@ results='[]'
 fixed_n=0; caught_n=0; fixed_and_caught=0
 for i in $(seq 0 $((N-1))); do
   id=$(jq -r ".[$i].id" <<<"$DEFECT_JSON")
+  file=$(jq -r ".[$i].file" <<<"$DEFECT_JSON")
   catchers=$(jq -r ".[$i].catchers[]" <<<"$DEFECT_JSON")
   kws=$(jq -r ".[$i].detect_keywords[]" <<<"$DEFECT_JSON")
   # fixed? (every catcher passes in isolation under -race)
@@ -86,11 +98,13 @@ for i in $(seq 0 $((N-1))); do
   for c in $catchers; do
     catcher_passes "$c" || fixed=false
   done
-  # caught? (any keyword present in diff/report, lowercased)
+  # caught? (any keyword in the report prose OR this defect's own diff hunk)
+  hay_lc="$REPORT_LC
+$(diff_section_lc "$file")"
   caught=false
   while IFS= read -r kw; do
     [ -z "$kw" ] && continue
-    if printf '%s' "$HAY_LC" | grep -qF "$(printf '%s' "$kw" | tr '[:upper:]' '[:lower:]')"; then
+    if printf '%s' "$hay_lc" | grep -qF "$(printf '%s' "$kw" | tr '[:upper:]' '[:lower:]')"; then
       caught=true; break
     fi
   done <<<"$kws"

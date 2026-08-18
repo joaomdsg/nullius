@@ -17,7 +17,7 @@
       "class": "concurrency/lost-update",
       "todo_impact": "Two users adding at the same moment: one todo silently dropped.",
       "catchers": ["TestApp_concurrentUpdatesDoNotLoseIncrements"],
-      "detect_keywords": ["lost update", "cas conflict", "stateapp.update", "does not retry", "doesn't retry", "no retry", "returns nil on conflict", "swallow", "casSleep"]
+      "detect_keywords": ["lost update", "cas conflict", "does not retry", "doesn't retry", "no retry", "returns nil on conflict", "swallow", "casSleep"]
     },
     {
       "id": "subscription-overwake",
@@ -27,7 +27,7 @@
       "class": "scoping/over-broadcast",
       "todo_impact": "Every change churns every client; private per-tab drafts can leak to unrelated tabs.",
       "catchers": ["TestApp_writeWakesOnlyTabsThatReadTheKey", "TestUser_writeWakesOnlyTabsThatReadTheKey"],
-      "detect_keywords": ["subscribed", "lastreads", "over-wake", "overwake", "over-broadcast", "wakes every", "wakes all tabs", "always returns true", "read set"]
+      "detect_keywords": ["lastreads", "over-wake", "overwake", "over-broadcast", "wakes every", "wakes all tabs", "always returns true", "read set"]
     },
     {
       "id": "statesess-cross-session-leak",
@@ -37,7 +37,7 @@
       "class": "isolation/session-leak",
       "todo_impact": "Anything session-scoped bleeds between unrelated users.",
       "catchers": ["TestUser_writeDoesNotLeakAcrossSessions"],
-      "detect_keywords": ["statesess", "cross-session", "across session", "leak across", "session leak", "session isolation", "sess=nil", "app-wide instead"]
+      "detect_keywords": ["cross-session", "across session", "leak across", "session leak", "session isolation", "sess=nil", "app-wide instead", "sess, s.wirekey", "broadcastrender(ctx, sess"]
     },
     {
       "id": "sse-premature-clear",
@@ -57,7 +57,7 @@
       "class": "lifecycle/premature-dispose",
       "todo_impact": "Active users are randomly disconnected when their tab crosses the TTL.",
       "catchers": ["TestSSE_connectedTabSurvivesContextTTLWithoutHeartbeat"],
-      "detect_keywords": ["removeexpired", "connected", "connected>0", "connected > 0", "live stream", "sweep connected", "reaps connected", "skip the ttl", "ttl skips"]
+      "detect_keywords": ["removeexpired", "connected>0", "connected > 0", "live stream", "sweep connected", "reaps connected", "skip the ttl", "ttl skips", "connected tab"]
     },
     {
       "id": "action-not-serialized",
@@ -67,7 +67,7 @@
       "class": "concurrency/missing-serialization",
       "todo_impact": "Rapid toggles/adds from one tab race and corrupt per-tab state.",
       "catchers": ["TestAction_concurrentPOSTsAreSerializedPerCtx"],
-      "detect_keywords": ["actionmu", "serializ", "per-ctx lock", "per-tab lock", "per-ctx serial", "per-tab serial", "concurrent post", "not serialized", "missing lock"]
+      "detect_keywords": ["actionmu", "per-ctx lock", "per-tab lock", "per-ctx serial", "per-tab serial", "concurrent post", "not serialized", "serialize the action", "action serializ", "missing lock"]
     }
   ]
 }
