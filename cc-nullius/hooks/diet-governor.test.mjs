@@ -484,3 +484,37 @@ test("ledger gate: below the knee nothing is gated, and the off switch clears it
   assert.equal(res.stdout.trim(), "", "NULLIUS_OFF must clear the gate entirely");
   rmSync(dir, { recursive: true, force: true });
 });
+
+// ---- heredoc bodies are data, not code -------------------------------------
+
+// Caught live 2026-08-18: a git commit whose MESSAGE contained "make the nudge
+// auditable" was denied twice by HEAVY_RE's `make\b`. The gates judge intent,
+// and a heredoc body carries none.
+test("a heavy-looking word inside a heredoc body does not deny the command", () => {
+  const cmd = [
+    "git commit -F - <<'MSG'",
+    "make the nudge auditable",
+    "npm test would be a lie here; this is prose",
+    "MSG",
+  ].join("\n");
+  const { decision } = run({ tool_name: "Bash", tool_input: { command: cmd } });
+  assert.notEqual(decision?.permissionDecision, "deny", "the body is a message, not a build");
+});
+
+test("a wide search inside a heredoc body does not deny the command", () => {
+  const cmd = ["cat > notes.md <<'EOF'", "we used grep -rn to find it", "EOF"].join("\n");
+  const { decision } = run({ tool_name: "Bash", tool_input: { command: cmd } });
+  assert.notEqual(decision?.permissionDecision, "deny", "prose about grep -r is not a sweep");
+});
+
+test("the heredoc strip does not blind the gates to the real command", () => {
+  const cmd = ["npm test <<'EOF'", "harmless prose", "EOF"].join("\n");
+  const { decision } = run({ tool_name: "Bash", tool_input: { command: cmd } });
+  assert.equal(decision?.permissionDecision, "deny", "npm test is still npm test");
+});
+
+test("an UNTERMINATED heredoc keeps only its opener line (body cannot hide a build)", () => {
+  const cmd = ["cat <<'EOF'", "npm test", "cargo build"].join("\n");
+  const { decision } = run({ tool_name: "Bash", tool_input: { command: cmd } });
+  assert.notEqual(decision?.permissionDecision, "deny", "the unclosed body is still data");
+});

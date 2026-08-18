@@ -379,10 +379,27 @@ if (tool === "Read") {
 
 if (tool === "Bash") {
   const cmd = ti.command || "";
-  if (cmd.includes("#nullius:ok")) { bump("escape:ok"); allow(); }
+
+  // A heredoc body is DATA, not code. Caught live 2026-08-18: a
+  // `git commit -F - <<MSG …` whose message said "make the nudge auditable"
+  // was denied twice by `make\b`, and the fix looked like "avoid the word
+  // tests in commit messages". The intent gates must read the command, so
+  // strip bodies first. An unterminated heredoc keeps only its opener line.
+  const code = ((c) => {
+    const cut = c.replace(
+      /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[\s\S]*?^\s*\2\s*$/gm,
+      "<<$2",
+    );
+    const open = cut.search(/<<-?\s*['"]?[A-Za-z_]/);
+    if (open === -1) return cut;
+    const nl = cut.indexOf("\n", open);
+    return nl === -1 ? cut : cut.slice(0, nl);
+  })(cmd);
+
+  if (code.includes("#nullius:ok")) { bump("escape:ok"); allow(); }
 
   const HEAVY_RE = /\b(go\s+(test|build|vet)|npm\s+(test|run|ci|install)|pnpm|yarn|pytest|vitest|jest|bun\s+(test|install|run)|deno\s+(test|task|check)|pip3?\s+install|uv\s+(sync|run|pip)|cargo\s+(test|build|check|clippy)|make\b|tsc\b|eslint|ruff|mypy|mvn\b|gradle|dotnet\s+(test|build)|ctest)\b/;
-  if (!quick && HEAVY_RE.test(cmd)) deny(
+  if (!quick && HEAVY_RE.test(code)) deny(
     "nullius: builds/tests flood the orchestrator. Dispatch scout " +
     "(quick check or close-out record). #nullius:ok only if it truly must run here.");
 
@@ -391,7 +408,7 @@ if (tool === "Bash") {
   // scan inside the one grep invocation so a later piped command can't leak.
   const WIDE_RE = /\brg\b|\bag\b|find\s+[./]|grep\b[^|;&]*\s-[a-zA-Z]*[rR][a-zA-Z]*\b|grep\b[^|;&]*\s--recursive\b/;
   const BOUND_RE = /\|\s*(tail|head)\b|\bwc\b|-l\b|--count|--files-with-matches|-m\s*\d/;
-  if (!quick && WIDE_RE.test(cmd) && !BOUND_RE.test(cmd)) deny(
+  if (!quick && WIDE_RE.test(code) && !BOUND_RE.test(code)) deny(
     "nullius: unbounded wide search. Delegate to scout or bound it " +
     "(| head -n 20 / -l / --count).");
 
