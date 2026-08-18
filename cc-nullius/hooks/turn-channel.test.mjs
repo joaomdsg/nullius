@@ -199,3 +199,28 @@ test("a non-compact SessionStart leaves the read-dedup ledger alone", () => {
   assert.match(readFileSync(readLedger, "utf8"), /file\.go/, "only compaction drops context");
   rmSync(dir, { recursive: true, force: true });
 });
+
+// ---- nudge provenance ------------------------------------------------------
+
+// A bare turn:nudge count cannot be audited: it says two nudges fired, never
+// which turns they judged, so a false positive is only catchable by a human who
+// happens to be watching. One already shipped that way.
+test("a nudge records WHICH turn it judged, not just that it happened", () => {
+  const dir = sandbox(), s = sid();
+  for (const id of ["m1", "m2", "m3"]) tick(dir, s, id, { tool: "Agent" });
+  const stats = JSON.parse(readFileSync(join(dir, `nullius-stats-${s}`), "utf8"));
+  assert.equal(stats["turn:nudge"], 1, "one nudge fired");
+  assert.deepEqual(stats["turn:nudge:at"], [3], "and it names the turn it judged");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a turn that batched a todo update with its dispatch is not a solo turn", () => {
+  const dir = sandbox(), s = sid();
+  for (const id of ["m1", "m2", "m3"]) {
+    tick(dir, s, id, { tool: "Agent" });
+    tick(dir, s, id, { tool: "TodoWrite" });
+  }
+  assert.equal(tick(dir, s, "m4", { tool: "Agent" }).out, null,
+    "dispatch + todo update in one turn is batching, not waste");
+  rmSync(dir, { recursive: true, force: true });
+});

@@ -171,10 +171,12 @@ test("hooks.json fires the sentinel on context-FILLING tools, not just agent dis
   const cfg = JSON.parse(readFileSync(new URL("./hooks.json", import.meta.url).pathname, "utf8"));
   const entry = cfg.hooks.PostToolUse.find((e) => /ctx-sentinel/.test(e.hooks[0].command));
   assert.ok(entry, "expected a PostToolUse entry for ctx-sentinel");
-  // Edit/Write added 2026-08-18: the turn channel counts tool calls per turn to
-  // spot turns wasted on a single dispatch, and a matcher blind to Edit/Write
-  // misread every "dispatch + edits" turn as wasteful (caught live).
-  for (const tool of ["Agent", "Task", "Read", "Bash", "Grep", "Glob", "Edit", "Write"]) {
+  // The rest added 2026-08-18: the turn channel judges a turn by how many calls
+  // it made, so any tool the matcher cannot see is invisible to that count.
+  // Blind to Edit/Write it misread every "dispatch + edits" turn as wasteful
+  // (caught live); blind to TodoWrite, every "dispatch + todo update" turn.
+  for (const tool of ["Agent", "Task", "Read", "Bash", "Grep", "Glob", "Edit", "Write",
+                      "TodoWrite", "Skill", "AskUserQuestion", "NotebookEdit"]) {
     assert.match(tool, new RegExp(`^(?:${entry.matcher})$`), `${tool} must reach the sentinel`);
   }
 });

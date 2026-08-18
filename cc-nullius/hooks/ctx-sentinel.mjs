@@ -94,6 +94,10 @@ function turnNote(data, rec, notes) {
       `beat two in three — and batch the edits and reads that do not depend on them.`,
     );
     s["turn:nudge"] = (s["turn:nudge"] || 0) + 1;
+    // Which turns nudged, not just how many. A bare count cannot be audited
+    // after the fact — the first false positive was only caught because it
+    // happened to fire while a human was watching. Keep the last few.
+    s["turn:nudge:at"] = [...(s["turn:nudge:at"] || []), s["turn:n"] || 0].slice(-8);
     solo = 0; // re-arm rather than nag every turn
   }
   s["turn:solo"] = solo;
