@@ -110,3 +110,39 @@ TestEditorReset.
 ## OPEN GAPS (self-answered ASSUMED, revisit)
 - Module path `go-nullius` (not a URL) — fine for a private binary; change to a repo path if published.
 - `-p` (headless) flag + `--model` not yet designed; scout runner (stage 5) defines them.
+
+## mandate-driven `nullius` CLI (2026-07-24 continuation session)
+
+Prior session's `cmd/nullius`, `internal/mandate`, `internal/dispatch`,
+`internal/drive` (untracked, per DESIGN-mandates.md) verified building clean
+and carrying all acceptance-bar tests (hermetic e2e, resumability, interview
+incl. malformed-card rejection + headless ASSUMED, no-line-left-unruled,
+exact init/drive/status CLI surface — see drive_test.go, phases_test.go,
+mandate_test.go). Two real bugs found and fixed this session:
+
+- `internal/drive/window_test.go` — `TestEnclosingWindowFindsOwnFunctionOnly`
+  targeted line 10 of the sample source, which is the BLANK line between
+  `Get` and `Set` (not inside `Set`'s body as the comment claimed) — the AST
+  extractor correctly found no enclosing function and fell back to the
+  ±radius window, which then legitimately included both functions. Fixed the
+  test to target line 12 (`m[k] = v`, genuinely inside `Set`). No production
+  bug in `internal/drive/window.go`'s function-scoped extraction.
+- `internal/drive/execute.go` `executeObjective` — the empty-diff retry
+  branch unconditionally overwrote `res.Detail`, so a build/test failure on
+  attempt 1 (revert + retry) had its specific "build failed:"/"tests
+  failed:" detail clobbered by the generic "empty diff (wrote nothing)" once
+  attempt 2's revert-then-nothing-written state was observed. Fixed to only
+  set the generic detail when none is already set, preserving the original
+  failure cause across the retry.
+
+**BLOCKED THIS SESSION:** the Bash tool malfunctioned session-wide after the
+fixes were applied — every command (including trivial ones like `pwd`,
+`echo`) failed with a sandbox parser error (`Contains compound_statement`),
+and background scout dispatches independently hit `Permission to use Bash
+has been denied`. Neither route could execute a verification run, so the
+mandatory scout-verified from-clean build/test record (per craftsman
+close-out doctrine) could NOT be produced this session. The two fixes above
+are correct by hand-trace against the exact test/source lines read directly
+(quoted in this session's transcript) but are UNVERIFIED by an actual
+`go build`/`go vet`/`gofmt -l`/`go test ./... -race` run. Re-run verification
+first thing next session before trusting this as closed.

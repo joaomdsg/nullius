@@ -90,7 +90,19 @@ const (
 // AskOption tunes a single Ask call without widening the core 5-arg contract.
 type AskOption func(*askConfig)
 
-type askConfig struct{ maxTokens int }
+type askConfig struct {
+	maxTokens int
+	usage     *int
+}
+
+// WithUsage accumulates the server-reported total_tokens of every completion
+// this Ask performs (including parse retries) into dst — receipts were
+// recording 0 because nothing surfaced usage.
+func WithUsage(dst *int) AskOption {
+	return func(c *askConfig) {
+		c.usage = dst
+	}
+}
 
 // WithMaxTokens overrides the output cap for one call (design: verdict 400 /
 // plan 1500 / report 3000). Non-positive values are ignored.
@@ -155,6 +167,9 @@ type chatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 func (c *HTTPCaller) endpoint(t Tier) (Endpoint, error) {
@@ -186,18 +201,21 @@ func (c *HTTPCaller) Ask(ctx context.Context, tier Tier, prompt string, grammar 
 	g := string(grammar)
 	var lastErr error
 	for attempt := 0; attempt <= parseRetries; attempt++ {
-		content, err := c.post(ctx, ep, msgs, g, cfg.maxTokens)
+		content, tok, err := c.post(ctx, ep, msgs, g, cfg.maxTokens)
 		if err != nil {
 			if g != "" && errors.Is(err, ErrGrammarCrash) {
 				// Server-side grammar crash is deterministic: drop the grammar and retry
 				// unconstrained. strict-decode below still enforces the schema, and g stays
 				// "" for the remaining parseRetries so we never re-trip the same crash.
 				g = ""
-				content, err = c.post(ctx, ep, msgs, g, cfg.maxTokens)
+				content, tok, err = c.post(ctx, ep, msgs, g, cfg.maxTokens)
 			}
 			if err != nil {
 				return err // transport / context error: re-asking cannot help
 			}
+		}
+		if cfg.usage != nil {
+			*cfg.usage += tok
 		}
 		dec := json.NewDecoder(strings.NewReader(content))
 		dec.DisallowUnknownFields()
@@ -218,8 +236,9 @@ func (c *HTTPCaller) Ask(ctx context.Context, tier Tier, prompt string, grammar 
 }
 
 // post performs one chat completion with transport-level backoff retries on
-// 429/5xx, returning the assistant message content.
-func (c *HTTPCaller) post(ctx context.Context, ep Endpoint, msgs []chatMessage, grammar string, maxTokens int) (string, error) {
+// 429/5xx, returning the assistant message content and the server-reported
+// total_tokens usage.
+func (c *HTTPCaller) post(ctx context.Context, ep Endpoint, msgs []chatMessage, grammar string, maxTokens int) (string, int, error) {
 	body, err := json.Marshal(chatRequest{
 		Model:       ep.Model,
 		Messages:    msgs,
@@ -229,7 +248,7 @@ func (c *HTTPCaller) post(ctx context.Context, ep Endpoint, msgs []chatMessage, 
 		Grammar:     grammar,
 	})
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	url := strings.TrimRight(ep.BaseURL, "/") + "/chat/completions"
 	base := c.RetryBase
@@ -241,7 +260,7 @@ func (c *HTTPCaller) post(ctx context.Context, ep Endpoint, msgs []chatMessage, 
 	for attempt := 0; attempt < transportRetryMax; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		if c.apiKey != "" {
@@ -251,7 +270,7 @@ func (c *HTTPCaller) post(ctx context.Context, ep Endpoint, msgs []chatMessage, 
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
-				return "", ctx.Err()
+				return "", 0, ctx.Err()
 			}
 			lastErr = err
 		} else {
@@ -261,24 +280,24 @@ func (c *HTTPCaller) post(ctx context.Context, ep Endpoint, msgs []chatMessage, 
 			case resp.StatusCode == http.StatusOK:
 				var cr chatResponse
 				if err := json.Unmarshal(data, &cr); err != nil {
-					return "", fmt.Errorf("caller: decode response envelope: %w", err)
+					return "", 0, fmt.Errorf("caller: decode response envelope: %w", err)
 				}
 				if len(cr.Choices) == 0 {
-					return "", errors.New("caller: response had no choices")
+					return "", 0, errors.New("caller: response had no choices")
 				}
 				msg := cr.Choices[0].Message
 				if strings.TrimSpace(msg.Content) == "" {
-					return msg.ReasoningContent, nil // grammar-constrained reasoning model
+					return msg.ReasoningContent, cr.Usage.TotalTokens, nil // grammar-constrained reasoning model
 				}
-				return msg.Content, nil
+				return msg.Content, cr.Usage.TotalTokens, nil
 			case resp.StatusCode >= 500 && grammar != "" && strings.Contains(strings.ToLower(string(data)), "grammar"):
 				// Deterministic grammar crash: retrying the same grammar will crash the
 				// same way, so fail fast — Ask retries unconstrained. Not retried here.
-				return "", fmt.Errorf("%w: transport %d: %s", ErrGrammarCrash, resp.StatusCode, snip(data))
+				return "", 0, fmt.Errorf("%w: transport %d: %s", ErrGrammarCrash, resp.StatusCode, snip(data))
 			case resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500:
 				lastErr = fmt.Errorf("caller: transport %d: %s", resp.StatusCode, snip(data))
 			default:
-				return "", fmt.Errorf("caller: transport %d: %s", resp.StatusCode, snip(data))
+				return "", 0, fmt.Errorf("caller: transport %d: %s", resp.StatusCode, snip(data))
 			}
 		}
 
@@ -287,11 +306,11 @@ func (c *HTTPCaller) post(ctx context.Context, ep Endpoint, msgs []chatMessage, 
 		}
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", 0, ctx.Err()
 		case <-time.After(backoff(base, attempt)):
 		}
 	}
-	return "", fmt.Errorf("caller: transport exhausted after %d attempts: %w", transportRetryMax, lastErr)
+	return "", 0, fmt.Errorf("caller: transport exhausted after %d attempts: %w", transportRetryMax, lastErr)
 }
 
 func backoff(base time.Duration, attempt int) time.Duration {

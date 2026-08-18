@@ -381,3 +381,41 @@ func TestAskContextCancel(t *testing.T) {
 		t.Fatalf("canceled ctx: err=%v, want context.Canceled", err)
 	}
 }
+
+func TestAskReportsUsageTokens(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"choices":[{"message":{"content":"{\"stands\":true,\"refuting_line\":null}"}}],"usage":{"total_tokens":42}}`)
+	}))
+	defer srv.Close()
+	c := New("", map[Tier]Endpoint{Fast: {BaseURL: srv.URL, Model: "m"}})
+	var out verdict
+	var tokens int
+	if err := c.Ask(context.Background(), Fast, "p", "", &out, WithUsage(&tokens)); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if tokens != 42 {
+		t.Fatalf("tokens = %d, want 42", tokens)
+	}
+}
+
+func TestAskAccumulatesUsageAcrossParseRetries(t *testing.T) {
+	n := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n++
+		if n == 1 {
+			io.WriteString(w, `{"choices":[{"message":{"content":"not json"}}],"usage":{"total_tokens":10}}`)
+			return
+		}
+		io.WriteString(w, `{"choices":[{"message":{"content":"{\"stands\":true,\"refuting_line\":null}"}}],"usage":{"total_tokens":5}}`)
+	}))
+	defer srv.Close()
+	c := New("", map[Tier]Endpoint{Fast: {BaseURL: srv.URL, Model: "m"}})
+	var out verdict
+	var tokens int
+	if err := c.Ask(context.Background(), Fast, "p", "", &out, WithUsage(&tokens)); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if tokens != 15 {
+		t.Fatalf("tokens = %d, want 15 (both completions counted)", tokens)
+	}
+}
