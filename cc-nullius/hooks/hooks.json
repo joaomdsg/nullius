@@ -8,6 +8,15 @@
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs\""
           }
         ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/compact-reinject.mjs\""
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -23,7 +32,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Agent|Task",
+        "matcher": "Agent|Task|Read|Bash|Grep|Glob|WebFetch|WebSearch",
         "hooks": [
           {
             "type": "command",

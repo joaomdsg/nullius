@@ -9,13 +9,14 @@
 // /compact line that preserves the close ledger. Re-nudges once per 32k
 // band beyond the knee. Fail-open everywhere: a sentinel bug must never
 // break a session.
-import { readFileSync, writeFileSync, existsSync, openSync, readSync, fstatSync, closeSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, openSync, readSync, fstatSync, closeSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const KNEE = Number(process.env.NULLIUS_CTX_KNEE) || 128_000;
 const BAND = 32_000; // re-nudge granularity beyond the knee
 const TAIL = 256 * 1024; // transcript bytes scanned from the end
+const LEDGER_FRESH_MS = 10 * 60 * 1000; // a ledger this new already answers the nudge
 
 function main() {
   if (process.env.NULLIUS_OFF === "1") return;
@@ -29,6 +30,10 @@ function main() {
   if (data.cwd && existsSync(join(data.cwd, ".nullius-off"))) return;
   const ctx = contextTokens(data.transcript_path);
   if (!ctx || ctx <= KNEE) return;
+
+  // A ledger written in the last few minutes means the session already did
+  // what this nudge asks. Nagging past that spends context to say nothing.
+  if (freshLedger(data.cwd)) return;
 
   const band = Math.floor((ctx - KNEE) / BAND) + 1;
   const stats = statsPath(data.session_id);
@@ -50,9 +55,11 @@ function main() {
         hookEventName: "PostToolUse",
         additionalContext:
           `nullius ctx-sentinel: context ≈${k}k tokens — past the attention knee (${Math.round(KNEE / 1000)}k). ` +
-          `Judgment quality degrades from here; do not start new open-ended hunts. Finish the current mandate, ` +
-          `run the scout close, then tell the user to run: /compact preserve the nullius close ledger ` +
-          `(STATUS/FACTS/RISKS/UNKNOWN/ASSUMED) verbatim; drop scout reports, file dumps and edit churn.`,
+          `Judgment quality degrades from here; do not start new open-ended hunts. Your FIRST action in this ` +
+          `turn is Skill(skill: "nullius:compact") — invoke it YOURSELF, before continuing the task, and do ` +
+          `not ask the user to type anything. It costs one turn and writes .nullius/ledger.md, which is ` +
+          `re-injected verbatim after any compaction. Do not defer it to the end of the mandate: ` +
+          `auto-compaction fires between turns without warning, and whatever is not in the ledger is lost.`,
       },
     }),
   );
@@ -84,6 +91,18 @@ function contextTokens(path) {
     } catch {} // truncated first line of the tail window — keep looking
   }
   return 0;
+}
+
+// True when .nullius/ledger.md was written within LEDGER_FRESH_MS. Fail-open:
+// unreadable/absent counts as stale, so the nudge still fires.
+function freshLedger(cwd) {
+  if (!cwd) return false;
+  try {
+    const age = Date.now() - statSync(join(cwd, ".nullius", "ledger.md")).mtimeMs;
+    return age >= 0 && age < LEDGER_FRESH_MS;
+  } catch {
+    return false;
+  }
 }
 
 function statsPath(sessionId) {

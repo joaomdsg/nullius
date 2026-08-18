@@ -3,7 +3,8 @@
 import { test } from "node:test";
 import assert from "node:assert";
 import { spawnSync } from "node:child_process";
-import { writeFileSync, rmSync, mkdtempSync } from "node:fs";
+import { readFileSync } from "node:fs";
+import { writeFileSync, rmSync, mkdtempSync, mkdirSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -117,4 +118,51 @@ test("NULLIUS_CTX_KNEE override lowers the threshold", () => {
   const out = res.stdout.trim() ? JSON.parse(res.stdout).hookSpecificOutput : null;
   assert.ok(out, "60k > 50k knee should nudge");
   rmSync(dir, { recursive: true, force: true });
+});
+
+// --- ledger-aware nudging (0.2.2): the nudge asks the model to invoke
+// nullius:compact itself; once a ledger exists it has nothing left to say.
+
+test("nudge tells the model to invoke the skill ITSELF, not to ask the user", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxsent-"));
+  const { out } = run({ session_id: sid(), transcript_path: fakeTranscript(dir, 150_000), cwd: dir });
+  assert.ok(out, "expected a nudge");
+  assert.match(out.additionalContext, /Skill\(skill: "nullius:compact"\)/, "names the self-invocation");
+  assert.match(out.additionalContext, /do not ask the user to type anything/i);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a FRESH .nullius/ledger.md suppresses the nudge (no nagging after the work is done)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxsent-"));
+  mkdirSync(join(dir, ".nullius"), { recursive: true });
+  writeFileSync(join(dir, ".nullius", "ledger.md"), "# nullius ledger\nRULED: x\n");
+  const { status, out } = run({ session_id: sid(), transcript_path: fakeTranscript(dir, 150_000), cwd: dir });
+  assert.equal(status, 0);
+  assert.equal(out, null, "a ledger written moments ago already answers the nudge");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a STALE ledger does not suppress the nudge", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxsent-"));
+  mkdirSync(join(dir, ".nullius"), { recursive: true });
+  const p = join(dir, ".nullius", "ledger.md");
+  writeFileSync(p, "# nullius ledger\nRULED: old\n");
+  const old = Date.now() / 1000 - 3600; // an hour ago
+  utimesSync(p, old, old);
+  const { out } = run({ session_id: sid(), transcript_path: fakeTranscript(dir, 150_000), cwd: dir });
+  assert.ok(out, "an hour-old ledger is not the current state");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("hooks.json fires the sentinel on context-FILLING tools, not just agent dispatches", () => {
+  // Measured 2026-08-17 (auto-compaction drive): a session that read six large
+  // files itself and dispatched nothing never got a single nudge — the matcher
+  // was Agent|Task, so the sentinel was blind to exactly the sessions that
+  // fill their own context.
+  const cfg = JSON.parse(readFileSync(new URL("./hooks.json", import.meta.url).pathname, "utf8"));
+  const entry = cfg.hooks.PostToolUse.find((e) => /ctx-sentinel/.test(e.hooks[0].command));
+  assert.ok(entry, "expected a PostToolUse entry for ctx-sentinel");
+  for (const tool of ["Agent", "Task", "Read", "Bash", "Grep", "Glob"]) {
+    assert.match(tool, new RegExp(`^(?:${entry.matcher})$`), `${tool} must reach the sentinel`);
+  }
 });

@@ -51,5 +51,15 @@ fi
 [[ "$CHECK" == "1" ]] && { [[ "$ok" == "1" ]] && echo "nullius: ready." || echo "nullius: fix the ✗ items above."; exit $((1-ok)); }
 [[ "$ok" == "1" ]] || { echo "nullius: wiring incomplete (see ✗ above) — launching anyway." >&2; }
 
-echo "nullius: launching co-pilot in $DIR — invoke /nullius:nullius on any nontrivial task; delegate large builds with nullius-build."
+# 4. compaction economics. The platform only auto-compacts near the model's
+# full window (~967k on Opus 5) — hundreds of thousands of tokens past the
+# 128k attention knee where judgment starts degrading. Pull it in to 200k so
+# compaction happens just after the ctx-sentinel has told the session to write
+# .nullius/ledger.md, which the compact-reinject hook restores afterwards.
+# Env var beats --autocompact and the autoCompactWindow setting; plain integer
+# only (no "200k"). Override by exporting it yourself before launching.
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-200000}"
+note "✓" "auto-compact window ${CLAUDE_CODE_AUTO_COMPACT_WINDOW} tokens (ledger written at the knee, re-injected after)"
+
+echo "nullius: launching co-pilot in $DIR — invoke /nullius:starve on any nontrivial task; delegate large builds with nullius-build."
 exec claude

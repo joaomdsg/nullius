@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, utimesSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, utimesSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -100,7 +100,7 @@ test("#nullius:ok escape still bypasses everything", () => {
 test("binary files are exempt from the whole-read line cap", () => {
   const p = join(CWD, "shot.png");
   const buf = Buffer.alloc(200_000);
-  for (let i = 0; i < buf.length; i += 7) buf[i] = 10; // plenty of newline bytes
+  for (let i = 0; i < buf.length; i += 7) buf[i] = 10;
   buf[3] = 0;
   writeFileSync(p, buf);
   const { decision } = run({ tool_name: "Read", tool_input: { file_path: p } });
@@ -387,3 +387,100 @@ test("SessionStart stays silent under the off switches", () => {
 });
 
 test("cleanup", () => { rmSync(CWD, { recursive: true, force: true }); });
+
+// ---- ledger gate -----------------------------------------------------------
+// Measured 2026-08-17/18 (auto-compaction drives): the ctx-sentinel nudged
+// twice, the model kept doing the user's task, auto-compaction fired and the
+// record was lost — twice. An advisory injection does not get the ledger
+// written; a denial does. Past the knee with no fresh ledger, context-FILLING
+// calls are denied while Write/Edit/Bash stay open so the ledger can be written.
+
+// A transcript whose last usage record implies `ctx` live tokens.
+function ctxTranscript(dir, ctx) {
+  const p = join(dir, `t-${Math.random().toString(36).slice(2)}.jsonl`);
+  writeFileSync(p, JSON.stringify({
+    type: "assistant",
+    message: { usage: { input_tokens: 2, cache_creation_input_tokens: 100, cache_read_input_tokens: ctx - 102, output_tokens: 9 } },
+  }) + "\n");
+  return p;
+}
+
+test("ledger gate: past the knee with no ledger, context-filling calls are denied", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nullius-gate-"));
+  const tp = ctxTranscript(dir, 200_000);
+  for (const [tool_name, tool_input] of [
+    ["Read", { file_path: "/etc/hostname" }],
+    ["Grep", { pattern: "x" }],
+    ["Agent", { description: "d", prompt: "p" }],
+  ]) {
+    const res = spawnSync("node", [HOOK], {
+      input: JSON.stringify({ cwd: dir, session_id: sid(), transcript_path: tp, tool_name, tool_input }),
+      encoding: "utf8", env: { ...process.env, NULLIUS_OFF: "", NULLIUS_CTX_KNEE: "60000" },
+    });
+    const d = res.stdout.trim() ? JSON.parse(res.stdout).hookSpecificOutput : null;
+    assert.equal(d?.permissionDecision, "deny", `${tool_name} must be denied`);
+    assert.match(d.permissionDecisionReason, /nullius:compact/, `${tool_name} deny must name the fix`);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("ledger gate: Write/Edit/Bash stay open so the ledger CAN be written", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nullius-gate-"));
+  const tp = ctxTranscript(dir, 200_000);
+  writeFileSync(join(dir, "x_test.go"), "package x\n"); // satisfy the tests-first ratchet
+  for (const [tool_name, tool_input] of [
+    ["Write", { file_path: join(dir, ".nullius/ledger.md"), content: "# nullius ledger\n" }],
+    ["Bash", { command: "git rev-parse HEAD" }],
+  ]) {
+    const res = spawnSync("node", [HOOK], {
+      input: JSON.stringify({ cwd: dir, session_id: sid(), transcript_path: tp, tool_name, tool_input }),
+      encoding: "utf8", env: { ...process.env, NULLIUS_OFF: "", NULLIUS_CTX_KNEE: "60000" },
+    });
+    const d = res.stdout.trim() ? JSON.parse(res.stdout).hookSpecificOutput : null;
+    assert.notEqual(d?.permissionDecision, "deny", `${tool_name} must NOT be gated — it writes the ledger`);
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("ledger gate: a fresh ledger reopens the gate; a stale one does not", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nullius-gate-"));
+  const tp = ctxTranscript(dir, 200_000);
+  mkdirSync(join(dir, ".nullius"), { recursive: true });
+  const led = join(dir, ".nullius", "ledger.md");
+  writeFileSync(led, "# nullius ledger\nRULED: x\n");
+  const call = () => {
+    const res = spawnSync("node", [HOOK], {
+      input: JSON.stringify({ cwd: dir, session_id: sid(), transcript_path: tp, tool_name: "Read", tool_input: { file_path: "/etc/hostname" } }),
+      encoding: "utf8", env: { ...process.env, NULLIUS_OFF: "", NULLIUS_CTX_KNEE: "60000" },
+    });
+    return res.stdout.trim() ? JSON.parse(res.stdout).hookSpecificOutput : null;
+  };
+  assert.notEqual(call()?.permissionDecision, "deny", "fresh ledger must reopen the gate");
+  const recent = Date.now() / 1000 - 15 * 60; // inside the 30min gate window
+  utimesSync(led, recent, recent);
+  assert.notEqual(call()?.permissionDecision, "deny", "15min is still current for the gate");
+  const old = Date.now() / 1000 - 7200;
+  utimesSync(led, old, old);
+  assert.equal(call()?.permissionDecision, "deny", "a two-hour-old ledger is not the current state");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("ledger gate: below the knee nothing is gated, and the off switch clears it", () => {
+  const dir = mkdtempSync(join(tmpdir(), "nullius-gate-"));
+  const tp = ctxTranscript(dir, 20_000);
+  const call = (env) => {
+    const res = spawnSync("node", [HOOK], {
+      input: JSON.stringify({ cwd: dir, session_id: sid(), transcript_path: tp, tool_name: "Read", tool_input: { file_path: "/etc/hostname" } }),
+      encoding: "utf8", env: { ...process.env, NULLIUS_OFF: "", NULLIUS_CTX_KNEE: "60000", ...env },
+    });
+    return res.stdout.trim() ? JSON.parse(res.stdout).hookSpecificOutput : null;
+  };
+  assert.notEqual(call({})?.permissionDecision, "deny", "20k context is nowhere near the knee");
+  const big = ctxTranscript(dir, 200_000);
+  const res = spawnSync("node", [HOOK], {
+    input: JSON.stringify({ cwd: dir, session_id: sid(), transcript_path: big, tool_name: "Read", tool_input: { file_path: "/etc/hostname" } }),
+    encoding: "utf8", env: { ...process.env, NULLIUS_OFF: "1", NULLIUS_CTX_KNEE: "60000" },
+  });
+  assert.equal(res.stdout.trim(), "", "NULLIUS_OFF must clear the gate entirely");
+  rmSync(dir, { recursive: true, force: true });
+});

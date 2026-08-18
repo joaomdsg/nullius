@@ -5,3 +5,4 @@ pi-nullius/node_modules/
 .claude/*.lock
 .nullius/
 go-nullius/go-nullius
+go-nullius/bin/

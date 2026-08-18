@@ -24,7 +24,7 @@
 // (subagents reach MCP tools via ToolSearch); NULLIUS_MCP_OK=1 disables.
 // Telemetry: denies/rewrites/dispatches counted per session in
 // $TMPDIR/nullius-stats-<session_id>; surfaced by /nullius:diet status.
-import { readFileSync, writeFileSync, statSync, existsSync, appendFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, statSync, existsSync, appendFileSync, readdirSync, openSync, readSync, fstatSync, closeSync } from "node:fs";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -173,7 +173,7 @@ if (data.agent_id && craftsman) {
     const marker = join(tmpdir(),
       `nullius-craft-${data.session_id || "nosession"}-${data.agent_id}`);
     if (isTestPath(path)) { try { appendFileSync(marker, "t\n"); } catch {} allow(); }
-    if (!isSourcePath(path)) allow(); // scaffolding/config/docs: nothing to test
+    if (!isSourcePath(path)) allow();
     if (!existsSync(marker)) deny(
       "nullius tests-first gate: touch a test file first — write/extend the failing " +
       "test for the pinned defect, quote its RED verbatim, then edit source.");
@@ -185,6 +185,65 @@ if (data.agent_id && craftsman) {
 if (data.agent_id) allow();
 
 // ---- main thread ------------------------------------------------------------
+
+// ---- ledger gate ------------------------------------------------------------
+// Past the attention knee, the pre-compaction record is the only thing that
+// survives. Measured 2026-08-17/18 (two auto-compaction drives): the
+// ctx-sentinel nudged, the model kept serving the user's task, auto-compaction
+// fired between turns and the whole record was lost — an advisory injection
+// does not get the ledger written. So this is a DENIAL, in the same
+// deny-then-comply idiom as the rest of the diet: past the knee with no fresh
+// .nullius/ledger.md, calls that FILL context are refused. Write/Edit/Bash stay
+// open precisely so the ledger can be written without lifting the gate, and
+// `#nullius:ok`/NULLIUS_OFF/.nullius-off still escape.
+const CTX_KNEE = Number(process.env.NULLIUS_CTX_KNEE) || 128_000;
+// 30min, not the sentinel's 10: this gate exists to guarantee a ledger EXISTS
+// before compaction, not that it is minutes-old. Measured 2026-08-18 dogfooding
+// this very session — a 10-minute window re-gated the leader twice inside one
+// task. The sentinel keeps 10min so it still nudges for a refresh.
+const LEDGER_FRESH_MS = 30 * 60 * 1000;
+const FILLS_CONTEXT = /^(Read|Grep|Glob|WebFetch|WebSearch|Agent|Task|mcp__)/;
+if (FILLS_CONTEXT.test(tool)) {
+  let ledgerAge = Infinity;
+  try { ledgerAge = Date.now() - statSync(join(cwd, ".nullius", "ledger.md")).mtimeMs; } catch {}
+  if (!(ledgerAge >= 0 && ledgerAge < LEDGER_FRESH_MS)) {
+    const ctx = liveContext(data.transcript_path);
+    if (ctx > CTX_KNEE) {
+      bump("ledger_gate");
+      deny(
+        `nullius: context \u2248${Math.round(ctx / 1000)}k tokens is past the attention knee ` +
+        `(${Math.round(CTX_KNEE / 1000)}k) and .nullius/ledger.md is missing or stale. ` +
+        `Auto-compaction fires between turns without asking, and everything not in the ledger ` +
+        `is lost. Invoke Skill(skill: "nullius:compact") NOW \u2014 one turn \u2014 then this call ` +
+        `passes unchanged. Write/Edit/Bash are open so you can write it.`,
+      );
+    }
+  }
+}
+
+// Live context estimate from the transcript tail's last usage record. Returns 0
+// when unreadable, so an unmeasurable context never gates work (fail-open).
+function liveContext(path) {
+  if (!path || !existsSync(path)) return 0;
+  try {
+    const fd = openSync(path, "r");
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - 256 * 1024);
+    const buf = Buffer.alloc(size - start);
+    readSync(fd, buf, 0, buf.length, start);
+    closeSync(fd);
+    const lines = buf.toString("utf8").split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"cache_read_input_tokens"')) continue;
+      try {
+        const u = JSON.parse(lines[i])?.message?.usage;
+        if (!u) continue;
+        return (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      } catch {}
+    }
+  } catch {}
+  return 0;
+}
 // Dispatch telemetry ("Agent" and "Task" are the same tool across CLI versions).
 if (tool === "Agent" || tool === "Task") {
   bump("dispatches");
@@ -231,10 +290,10 @@ if (tool === "Edit" || tool === "Write") {
   const path = ti.file_path || "";
   const newestTest = newestTestMtime(cwd);
   let st = rLoad();
-  if (st === null) st = { n: 0, w: newestTest };        // seed: only touches AFTER now count
-  if (newestTest > st.w) st = { n: 0, w: newestTest };  // a test was touched by SOME tool since w
+  if (st === null) st = { n: 0, w: newestTest };
+  if (newestTest > st.w) st = { n: 0, w: newestTest };
 
-  if (isTestPath(path)) { rSave({ n: 0, w: st.w }); allow(); }        // tests: any size, resets
+  if (isTestPath(path)) { rSave({ n: 0, w: st.w }); allow(); }
   if (tool === "Write" && !isSourcePath(path)) { rSave(st); allow(); } // scaffolding/config/docs
 
   if (isSourcePath(path) && st.n >= EDITS_PER_TEST) { rSave(st); deny(
@@ -255,7 +314,7 @@ if (tool === "Edit" || tool === "Write") {
   // BEFORE generation. The boundary gate (dropped exports) stays — it catches
   // a regression, which is worth its one wasted generation.
   if (isSourcePath(path)) { rSave({ n: st.n + 1, w: st.w }); allow(); }
-  rSave(st);                                              // non-source Edit: persist any watermark bump
+  rSave(st);
   allow();
 }
 
@@ -277,7 +336,7 @@ if (tool === "Read") {
       if (nul) lines = null; // binary: newline bytes are not lines
       else if (buf.length && buf[buf.length - 1] !== 10) lines++;
     }
-  } catch { allow(); } // nonexistent/unreadable: let the tool error itself
+  } catch { allow(); }
 
   const bounded = ti.pages != null || (ti.limit != null && ti.limit <= MAX_READ);
   if (!bounded && lines != null && lines > MAX_READ) deny(

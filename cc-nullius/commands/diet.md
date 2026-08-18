@@ -12,9 +12,11 @@ Manage the nullius diet governor. Argument: $ARGUMENTS (on | off | status; defau
   - mode: OFF (`.nullius-off` or `NULLIUS_OFF=1`), QUICK (`.nullius-quick`
     fresh — see /nullius:quick), or ON;
   - knobs: `NULLIUS_MAX_READ` / `NULLIUS_EDITS_PER_TEST` / `NULLIUS_TAIL_LINES`
-    (defaults 250 / 4 / 30); Write/Edit have no size cap;
+    / `NULLIUS_CTX_KNEE` (ledger gate + ctx-sentinel)
+    (defaults 250 / 4 / 30 / 128k); Write/Edit have no size cap;
   - session telemetry: `cat "${TMPDIR:-/tmp}"/nullius-stats-*  #nullius:ok`
     (best-effort JSON per session: denies, rewrites, dispatches incl.
-    per-agent-type, quick_passes). Report the counts and what they say
+    per-agent-type, quick_passes, escapes, `ctx:nudge`, `ledger_gate`,
+    `compact:reinject`/`compact:noledger`). Report the counts and what they say
     about this session's economics — e.g. many denies means you are
     fighting the governor instead of routing around it.

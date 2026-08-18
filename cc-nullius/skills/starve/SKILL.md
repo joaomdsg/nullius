@@ -282,11 +282,17 @@ agents absorb, hunt, build, verify — never decide.
    or they block the close now. An overrule re-enters the loop before
    the task is called done.
    **Compact handoff**: if the ctx-sentinel fired this session (context
-   past the attention knee), end the report by handing the user the
-   line: `/compact preserve the close ledger (STATUS/FACTS/RISKS/
-   UNKNOWN/ASSUMED) verbatim; drop scout reports, file dumps and edit
-   churn`. Post-close is the one point compaction is near-lossless —
-   the ledger IS the summary. Never suggest compacting mid-hunt.
+   past the attention knee), invoke `nullius:compact` YOURSELF via the
+   Skill tool — never ask the user to type anything. It writes the record
+   to `.nullius/ledger.md`. Under `bin/nullius` the auto-compact window is
+   200k, so compaction then fires on its own just past the knee. Never rely on the compaction summary: a plugin cannot shape it
+   (upstream #37307/#58538 closed "not planned"), so nullius keeps the
+   record on disk and the `compact-reinject` SessionStart hook reads it
+   back into the fresh context — which also covers the *auto*-compaction
+   nobody asked for. Post-close is the one point compaction is
+   near-lossless — the ledger IS the summary. Never compact mid-hunt by
+   choice; if the ceiling forces it, write the ledger anyway (a listed
+   UNRULED set beats a lost one).
 
 ## Hygiene
 

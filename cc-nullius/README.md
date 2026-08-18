@@ -59,19 +59,44 @@ the growth term directly.
   (sonnet — last resort for one pinned indivisible change, tests-first,
   public-API surface frozen). There is no judge tier: verification is
   absorption; every ruling is the orchestrator's.
-- **Skill** `nullius`: the orchestrator doctrine (two-turn hunt —
+- **Skill** `starve`: the orchestrator doctrine (two-turn hunt —
   terrain then targeted lenses, with the terrain ruling as a load-bearing
   GATE: quoted lens targets → FULL mode, core lenses never deselected;
   quoted absences on pure greenfield → BUILD mode, ceremony stands down
   and the leader builds under the diet alone; doubt → FULL. Capped ruled
   checklist with no line left unruled; out-of-mandate has a cost; close
   via scout record + surface diff in every mode).
-- **Commands**: `/nullius:hunt`, `/nullius:close`, `/nullius:quick on|off|status`,
-  `/nullius:diet on|off|status`.
+- **Commands**: `/nullius:hunt`, `/nullius:close`, `/nullius:compact`,
+  `/nullius:quick on|off|status`, `/nullius:diet on|off|status`.
 - **Terrain cache**: the close writes `.nullius/terrain.md` (commit-stamped,
   ≤60 lines); the next session's Turn A validates it with one scout and
   re-maps only the git drift — session 2+ stops re-paying absorption.
-- **Tests**: `node --test hooks/diet-governor.test.mjs` — behavioral suite piping synthetic
+- **Compaction survival**: a plugin cannot trigger or shape compaction
+  (upstream #37307/#58538, both closed "not planned"; `PreCompact` can only
+  block, never rewrite the summary). So nullius writes the record instead:
+  `/nullius:compact` distills the session into `.nullius/ledger.md`
+  (MANDATE/RULED/UNRULED/FACTS/VERIFICATION/RISKS/UNKNOWN/ASSUMED/NEXT) and
+  the `compact-reinject` hook — `SessionStart` with `matcher: "compact"` —
+  reads it back into the fresh context, declaring the ledger authoritative
+  over the lossy summary. This covers *auto*-compaction, which a nudge to
+  the user cannot. No ledger on disk? The hook says so loudly rather than
+  letting the model mistake a summary for a record. **No copy-paste in the
+  loop**: the ctx-sentinel tells the model to invoke `nullius:compact` itself
+  (plugin commands are model-invocable via the Skill tool), and `bin/nullius`
+  exports `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` so compaction fires by
+  itself just past the 128k knee instead of at the model's ~967k ceiling —
+  the one place the platform still requires a human is triggering `/compact`
+  on demand, and lowering the window removes the need to. A ledger written in
+  the last 10 minutes suppresses further nudges. And because a nudge is only
+  advice — measured twice: the model kept serving the user's task, compaction
+  fired, the record was lost — there is a **ledger gate** in the governor: past
+  the knee with no fresh ledger, context-FILLING calls (Read/Grep/Glob/Web/
+  Agent/MCP) are denied until `nullius:compact` runs. Write/Edit/Bash stay open
+  so the ledger can be written under the gate; `#nullius:ok`, `.nullius-off`
+  and `NULLIUS_OFF=1` still escape. The gate accepts a ledger up to 30 min old
+  (it guarantees a record EXISTS before compaction); the sentinel's own
+  suppression window is 10 min, so it keeps asking for refreshes.
+- **Tests**: `node --test hooks/*.test.mjs` — behavioral suite piping synthetic
   PreToolUse payloads through the governor (rewrite validity, exit-code
   preservation, no auto-approve, gates, ledger, craftsman markers, QUICK
   mode + expiry, MCP gate, telemetry).
