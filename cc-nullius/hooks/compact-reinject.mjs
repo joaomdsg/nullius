@@ -18,6 +18,7 @@
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { findLedger } from "./ledger-path.mjs";
 
 const LEDGER = ".nullius/ledger.md";
 const MAX_LINES = 200; // ledger is meant to be ~120; this is the backstop
@@ -40,10 +41,30 @@ function main() {
   const cwd = data.cwd || process.cwd();
   if (existsSync(join(cwd, ".nullius-off"))) return;
 
-  const path = join(cwd, LEDGER);
+  // The governor's read-dedup ledger records ranges the leader has already
+  // absorbed, and denies re-reading them. Compaction just dropped those ranges
+  // out of context, so every entry is now a lie that costs a turn to route
+  // around. Clear it here — this is the one hook that knows a compaction
+  // happened. Truncate rather than unlink: the governor appends to it and must
+  // not care whether the file exists.
+  //
+  // This is fail-safe under an UNVERIFIED assumption. If the CLI preserves
+  // session_id across a compaction, this clears the very file the governor
+  // reads — the intended effect. If it does NOT, the governor starts reading a
+  // fresh, empty ledger under the new id anyway, so re-reads pass regardless
+  // and this truncation merely tidies an orphan. Either branch satisfies the
+  // intent; neither can deny a legitimate re-read.
+  try {
+    writeFileSync(join(tmpdir(), `nullius-ledger-${data.session_id || "nosession"}`), "");
+  } catch {} // best-effort, exactly like the ledger itself
+
+  // findLedger walks up to the repo root. Caught live 2026-08-18: with the
+  // session cwd one directory below the root, this hook announced "there is NO
+  // ledger" over a fresh record and told the model its findings were gone.
+  const path = findLedger(cwd);
   // The counter must follow the CONTENT decision, not the file's existence:
   // an unreadable or blank ledger is a lost record, however present the file.
-  const ctx = existsSync(path) ? ledgerContext(path) : null;
+  const ctx = path ? ledgerContext(path) : null;
   if (!ctx) {
     bump(data.session_id, "compact:noledger");
     process.stdout.write(

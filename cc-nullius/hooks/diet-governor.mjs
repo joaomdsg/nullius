@@ -27,6 +27,7 @@
 import { readFileSync, writeFileSync, statSync, existsSync, appendFileSync, readdirSync, openSync, readSync, fstatSync, closeSync } from "node:fs";
 import { join, basename } from "node:path";
 import { tmpdir } from "node:os";
+import { ledgerAge } from "./ledger-path.mjs";
 
 // writeFileSync(1) not console.log: process.exit right after an async pipe
 // write can truncate the decision JSON.
@@ -66,7 +67,11 @@ try {
 
 const tool = data.tool_name || "";
 const ti = data.tool_input || {};
-const MAX_READ = parseInt(process.env.NULLIUS_MAX_READ || "250", 10);
+// 120, not 250: the Read channel was the loosest one in the plugin — Bash
+// output is bounded to 30 lines and a scout report to 40, so a whole-file read
+// was the cheapest route back to bulk. nullius-build has run its nested
+// craftsman at 80 since it landed, which is the evidence this floor is livable.
+const MAX_READ = parseInt(process.env.NULLIUS_MAX_READ || "120", 10);
 // No Write/Edit size cap: measured 2026-07-19, a post-generation size-deny
 // double-bills (the leader already spent the output tokens) and the real
 // delegate-vs-write crossover (~1,800 lines cold / ~130 lean for an Opus
@@ -204,9 +209,13 @@ const CTX_KNEE = Number(process.env.NULLIUS_CTX_KNEE) || 128_000;
 const LEDGER_FRESH_MS = 30 * 60 * 1000;
 const FILLS_CONTEXT = /^(Read|Grep|Glob|WebFetch|WebSearch|Agent|Task|mcp__)/;
 if (FILLS_CONTEXT.test(tool)) {
-  let ledgerAge = Infinity;
-  try { ledgerAge = Date.now() - statSync(join(cwd, ".nullius", "ledger.md")).mtimeMs; } catch {}
-  if (!(ledgerAge >= 0 && ledgerAge < LEDGER_FRESH_MS)) {
+  // ledgerAge walks up to the repo root: statting join(cwd, ".nullius/ledger.md")
+  // denied every context-filling call in any session started below the root
+  // (caught live 2026-08-18, alongside the reinject reporting "NO ledger" over a
+  // 38-second-old one). Age 0 with no cwd fails OPEN — an unmeasurable ledger
+  // must never gate work, the same rule liveContext follows.
+  const age = data.cwd ? ledgerAge(data.cwd) : 0;
+  if (!(age >= 0 && age < LEDGER_FRESH_MS)) {
     const ctx = liveContext(data.transcript_path);
     if (ctx > CTX_KNEE) {
       bump("ledger_gate");
@@ -338,10 +347,22 @@ if (tool === "Read") {
     }
   } catch { allow(); }
 
-  const bounded = ti.pages != null || (ti.limit != null && ti.limit <= MAX_READ);
-  if (!bounded && lines != null && lines > MAX_READ) deny(
-    `nullius: whole read of ${basename(path)} (${lines} lines > ${MAX_READ}). Read the ` +
-    "decisive region (offset+limit) or dispatch scout to distill it.");
+  // Past the attention knee the scarce resource is attention, not dollars, so
+  // the floor halves exactly where a whole-file read does the most damage.
+  // liveContext() reads and parses up to 256KB of transcript, so resolve the
+  // cap LAZILY: it only changes the outcome for a read sized strictly between
+  // the halved floor and the full one. Under HALF it passes either way; over
+  // MAX_READ it is denied either way — and those are the overwhelming majority
+  // of reads, which must not pay for the transcript scan.
+  const HALF = Math.max(40, Math.floor(MAX_READ / 2));
+  const inBand = (n) => n != null && n > HALF && n <= MAX_READ;
+  const cap = (inBand(lines) || inBand(ti.limit)) && liveContext(data.transcript_path) > CTX_KNEE
+    ? HALF
+    : MAX_READ;
+  const bounded = ti.pages != null || (ti.limit != null && ti.limit <= cap);
+  if (!bounded && lines != null && lines > cap) deny(
+    `nullius: whole read of ${basename(path)} (${lines} lines > ${cap}). Dispatch scout ` +
+    "to distill it, or read the decisive region yourself with offset+limit.");
 
   const ledger = join(tmpdir(), `nullius-ledger-${data.session_id || "nosession"}`);
   const key = `${path}|${ti.offset ?? ""}|${ti.limit ?? ""}|${ti.pages ?? ""}|${mtime}`;

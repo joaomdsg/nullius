@@ -13,7 +13,9 @@ the growth term directly.
   discriminator; `agent_type` can appear on the main thread in `--agent`
   sessions — pass untouched):
   - denies Grep/Glob/WebFetch/WebSearch → steers to scouts;
-  - denies whole reads of files > `NULLIUS_MAX_READ` (250) lines and exact
+  - denies whole reads of files > `NULLIUS_MAX_READ` (120 lines, halved past
+    the attention knee — the Read channel was the loosest one, against a
+    30-line Bash bound and a 40-line scout report) and exact
     duplicate reads (ledger keyed on path+range+mtime, per session; deny
     reason names the narrower-range escape for post-compaction re-reads);
     binaries (extension or NUL sniff) are exempt from the line cap —

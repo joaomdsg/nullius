@@ -32,7 +32,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Agent|Task|Read|Bash|Grep|Glob|WebFetch|WebSearch",
+        "matcher": "Agent|Task|Read|Bash|Grep|Glob|WebFetch|WebSearch|Edit|Write",
         "hooks": [
           {
             "type": "command",

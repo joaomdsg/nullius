@@ -14,7 +14,11 @@ coming, and at close. It is cheap; a missing ledger is not.
    already hold. If you don't know something, that is an UNKNOWN line, not
    a dispatch.
 
-2. **Write `.nullius/ledger.md`** (create `.nullius/` if absent), ~120 lines
+2. **Write `$(git rev-parse --show-toplevel)/.nullius/ledger.md`** (create
+   `.nullius/` if absent), ~120 lines. **The repo ROOT, never the cwd**: the
+   hooks walk up to find the ledger and take the FIRST one they hit, so a
+   ledger written in a subdirectory shadows the real record for every session
+   started at or below it. No repo? Then the cwd is the only home there is.
    max, in this order. Omit a section only if it is genuinely empty:
 
    ```
@@ -48,7 +52,8 @@ coming, and at close. It is cheap; a missing ledger is not.
    The first two or three concrete actions, in order.
    ```
 
-3. **Verify the write**: `wc -l .nullius/ledger.md` and confirm the commit
+3. **Verify the write**: `wc -l "$(git rev-parse --show-toplevel)/.nullius/ledger.md"`
+   — and confirm the path printed is the root, not a subdirectory. Confirm the commit
    stamp matches `git rev-parse HEAD`. A stale stamp makes every path:line
    in the file suspect.
 

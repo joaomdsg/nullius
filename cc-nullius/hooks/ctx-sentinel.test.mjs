@@ -30,9 +30,18 @@ function fakeTranscript(dir, ctx) {
   return p;
 }
 
+// ORACLE finding, 2026-08-18: this used to pass `cwd: BARE_CWD`, so every
+// nudge-expecting test silently depended on the DEVELOPER's repo state — a fresh
+// .nullius/ledger.md at the repo root legitimately suppresses the nudge
+// (freshLedger, 10-minute window), so the suite failed 4/4 on any machine where
+// someone had just run /nullius:compact. No correct implementation can nudge
+// through a fresh ledger, so the test was wrong, not the hook. An empty sandbox
+// cwd keeps ledger freshness a thing tests opt INTO.
+const BARE_CWD = mkdtempSync(join(tmpdir(), "ctxsent-bare-"));
+
 function run(payload) {
   const res = spawnSync("node", [HOOK], {
-    input: JSON.stringify({ cwd: process.cwd(), ...payload }),
+    input: JSON.stringify({ cwd: BARE_CWD, ...payload }),
     encoding: "utf8",
     env: { ...process.env, NULLIUS_OFF: "" },
   });
@@ -100,7 +109,7 @@ test("subagent context (agent_id set): silent", () => {
 test("NULLIUS_OFF: silent even above knee", () => {
   const dir = mkdtempSync(join(tmpdir(), "ctxsent-"));
   const res = spawnSync("node", [HOOK], {
-    input: JSON.stringify({ cwd: process.cwd(), session_id: sid(), transcript_path: fakeTranscript(dir, 150_000) }),
+    input: JSON.stringify({ cwd: BARE_CWD, session_id: sid(), transcript_path: fakeTranscript(dir, 150_000) }),
     encoding: "utf8",
     env: { ...process.env, NULLIUS_OFF: "1" },
   });
@@ -111,7 +120,7 @@ test("NULLIUS_OFF: silent even above knee", () => {
 test("NULLIUS_CTX_KNEE override lowers the threshold", () => {
   const dir = mkdtempSync(join(tmpdir(), "ctxsent-"));
   const res = spawnSync("node", [HOOK], {
-    input: JSON.stringify({ cwd: process.cwd(), session_id: sid(), transcript_path: fakeTranscript(dir, 60_000) }),
+    input: JSON.stringify({ cwd: BARE_CWD, session_id: sid(), transcript_path: fakeTranscript(dir, 60_000) }),
     encoding: "utf8",
     env: { ...process.env, NULLIUS_OFF: "", NULLIUS_CTX_KNEE: "50000" },
   });
@@ -162,7 +171,10 @@ test("hooks.json fires the sentinel on context-FILLING tools, not just agent dis
   const cfg = JSON.parse(readFileSync(new URL("./hooks.json", import.meta.url).pathname, "utf8"));
   const entry = cfg.hooks.PostToolUse.find((e) => /ctx-sentinel/.test(e.hooks[0].command));
   assert.ok(entry, "expected a PostToolUse entry for ctx-sentinel");
-  for (const tool of ["Agent", "Task", "Read", "Bash", "Grep", "Glob"]) {
+  // Edit/Write added 2026-08-18: the turn channel counts tool calls per turn to
+  // spot turns wasted on a single dispatch, and a matcher blind to Edit/Write
+  // misread every "dispatch + edits" turn as wasteful (caught live).
+  for (const tool of ["Agent", "Task", "Read", "Bash", "Grep", "Glob", "Edit", "Write"]) {
     assert.match(tool, new RegExp(`^(?:${entry.matcher})$`), `${tool} must reach the sentinel`);
   }
 });
