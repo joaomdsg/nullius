@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # nullius benchmark harness — headless, unbiased, reproducible.
 #
-#   ./run.sh <task-dir> <arm: nullius|fable-lean|byproxy|byproxy-noaudit|byproxy-nobuilder|plain|plain+report> [--reps N] [--keep]
+#   ./run.sh <task-dir> <arm: cc-nullius|byproxy|byproxy-noaudit|byproxy-nobuilder|go-nullius|plain|plain+report> [--reps N] [--keep]
 #
 # Each rep: fresh worktree from the task's pinned REF → one headless
 # `claude -p` run → score.sh replays DONE-WHEN independently (never trust
 # the run's self-report) → one JSONL row with measured cost.
 #
 # Arm model pins:
-#   nullius  leader = LEAN_MODEL (default fable-5 @ low) with haiku
-#            nullius-explorer scouts — the measured-best config
-#            (benchmark 7). `fable-lean` is the same arm under its
-#            historical name, kept so old reproduce commands work.
+#   cc-nullius  leader = LEAN_MODEL (default fable-5 @ low) driving the
+#            cc-nullius PLUGIN (scout/lens-hunter haiku, craftsman sonnet)
+#            with the diet governor hook live.
 #   byproxy* the archived v6 ceremony (archive/byproxy-v6/), runnable for
 #            reproduction: control plane = ORCH_MODEL (default sonnet-5 @
 #            high, as measured-and-refuted in benchmark 7)
@@ -60,27 +59,22 @@ PLAIN_MODEL="${PLAIN_MODEL:-${SOLO_MODEL:-claude-opus-4-8}}"
 PLAIN_EFFORT="${PLAIN_EFFORT:-${SOLO_EFFORT:-}}"   # empty = harness default effort
 GO_MODEL="${GO_MODEL:-opus}"     # go-nullius arm: binary model alias (haiku|sonnet|opus|fable) or full id
 GO_EFFORT="${GO_EFFORT-low}"     # go-nullius arm: output_config effort (single-dash: explicit "" stays empty; haiku rejects the param)
-# Seven arm names, six configs (see harness/README.md):
-#   nullius (alias fable-lean, its pre-rename label) is the live
-#   methodology. The byproxy* family is the archived v6 ceremony, kept
+# Arm names and configs (see harness/README.md):
+#   cc-nullius is the live methodology. The byproxy* family is the archived v6 ceremony, kept
 #   runnable for reproduction; its ablations decompose the old confounds:
 #   plain+report isolates the report-FORMAT effect on disclosure,
 #   byproxy-noaudit isolates the cold auditor's contribution, and
 #   byproxy-nobuilder isolates the orchestrator/builder SPLIT (measured:
 #   pure waste at same tier — benchmark 7).
 case "$ARM" in
-  nullius)           LABEL="${LABEL:-nullius-${LEAN_MODEL#claude-}-$LEAN_EFFORT}";;
-  nullius-rev1)      LABEL="${LABEL:-nullius-rev1-${LEAN_MODEL#claude-}-$LEAN_EFFORT}";;
-  nullius-rev2)      LABEL="${LABEL:-nullius-rev2-${LEAN_MODEL#claude-}-$LEAN_EFFORT}";;
   cc-nullius)        LABEL="${LABEL:-cc-nullius-${LEAN_MODEL#claude-}-$LEAN_EFFORT}";;
-  fable-lean)        LABEL="${LABEL:-fable-lean-${LEAN_MODEL#claude-}-$LEAN_EFFORT}";;
   byproxy)           LABEL="${LABEL:-byproxy-${ORCH_MODEL#claude-}-$ORCH_EFFORT}";;
   byproxy-noaudit)   LABEL="${LABEL:-byproxy-noaudit-${ORCH_MODEL#claude-}-$ORCH_EFFORT}";;
   byproxy-nobuilder) LABEL="${LABEL:-byproxy-nobuilder-${ORCH_MODEL#claude-}-$ORCH_EFFORT}";;
   go-nullius)        LABEL="${LABEL:-go-nullius-${GO_MODEL#claude-}-$GO_EFFORT}";;
   plain)             LABEL="${LABEL:-plain-${PLAIN_MODEL#claude-}${PLAIN_EFFORT:+-$PLAIN_EFFORT}}";;
   plain+report)      LABEL="${LABEL:-plain-report-${PLAIN_MODEL#claude-}${PLAIN_EFFORT:+-$PLAIN_EFFORT}}";;
-  *) echo "arm must be nullius|nullius-rev1|nullius-rev2|cc-nullius|fable-lean|byproxy|byproxy-noaudit|byproxy-nobuilder|plain|plain+report" >&2; exit 2;;
+  *) echo "arm must be cc-nullius|byproxy|byproxy-noaudit|byproxy-nobuilder|plain|plain+report" >&2; exit 2;;
 esac
 
 # Symmetric disclosure (threat #4). Every arm is asked to disclose, so `caught`
@@ -102,6 +96,22 @@ FACTS: <what you changed, verified>
 RISKS: <every bug, race, or latent defect you did not fix or are unsure about — name each>
 UNKNOWN: <what you could not determine>
 ASSUMED: <assumptions you made>'
+
+# CRED_FILE (opt-in): path to a host Claude credentials JSON (normally
+# "$HOME/.claude/.credentials.json") so a containerised rep can ride your
+# existing OAuth login with no credential in the environment at all. Validated
+# here, by PATH ONLY — the contents are never read, logged or interpolated
+# anywhere in this harness.
+if [[ -n "${CRED_FILE:-}" ]]; then
+  if [[ "${CONTAINER:-0}" != "1" ]]; then
+    echo "CRED_FILE is only supported with CONTAINER=1 (the host path already uses your own \$HOME login)" >&2
+    exit 3
+  fi
+  if [[ ! -r "$CRED_FILE" || ! -s "$CRED_FILE" ]]; then
+    echo "CRED_FILE is set but missing, unreadable or empty: $CRED_FILE" >&2
+    exit 3
+  fi
+fi
 
 RESULTS_DIR="$HARNESS_DIR/results"; mkdir -p "$RESULTS_DIR"
 JSONL="$RESULTS_DIR/results.jsonl"
@@ -125,6 +135,8 @@ for rep in $(seq 1 "$REPS"); do
   fi
 
   cleanup() {
+    # The credential copy dies with every rep, KEEP or not.
+    rm -f "$WTPARENT/chome/.claude/.credentials.json" >/dev/null 2>&1 || true
     if [[ "$KEEP" -eq 0 ]]; then
       if [[ -z "${SEED_DIR:-}" ]]; then
         git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true
@@ -206,53 +218,14 @@ $SKILL_BODY")
     RUN_PROMPT="Complete this task under the byproxy v6 methodology in your system prompt: explorer recon, surgical read, contract, critic red-team, gate, $STEP_TAIL — $HANDS_LINE — before you finish.
 
 $PROMPT"
-  elif [[ "$ARM" == "nullius" || "$ARM" == "fable-lean" ]]; then
-    # The live methodology (fable-lean is its pre-rename label): top-tier
-    # leader HANDS-ON with the context diet as the ONLY methodology — no
-    # contracts, critic, gate, or audit. Haiku scouts absorb the bulk
-    # context growth (test runs, sweeps, reruns) in throwaway contexts
-    # billed at haiku prices; the resident premium context stays surgical.
-    # Design note from the measured record: report-mediated intake can
-    # exceed raw reading (v5's orchestrator took in MORE report tokens
-    # than plain fable read raw), so the leader still reads the few
-    # decisive files itself, once.
-    mkdir -p "$WT/.claude/agents"
-    cp "$ROOT_DIR/.claude/agents/nullius-explorer.md" "$WT/.claude/agents/"
-    CLAUDE_ARGS+=(--model "$LEAN_MODEL" --effort "$LEAN_EFFORT")
-    CLAUDE_ARGS+=(--append-system-prompt "You are a senior engineer working this task HANDS-ON, under one hard operating constraint: your context window is the bill — every token that enters it is re-paid on every turn that follows, so you finish lean or you finish expensive. The diet governs CONTEXT, never scope: you do ALL the work the task demands, cheaply. Discipline, non-negotiable: (1) DELEGATE BULK: never run builds, tests, vet, or broad searches yourself, and never read whole files you are not about to edit — dispatch nullius-explorer subagents (Agent tool; cheap throwaway contexts) for every such job, BATCHED in parallel when independent; they return capped reports and their runs are your trusted record. (2) HUNT WIDE, THROUGH EXPLORERS: delegation applies to discovery too. Early, batch explorers to sweep EVERY corner of the mandate's code with these lenses, each answered with QUOTED MECHANISMS, never claims: for every shared mutable state AND every mutating entrypoint (handler, action, callback), quote the lock acquisition inside the entrypoint's OWN BODY — a mutex field, a doc comment, or a sibling function's lock is not serialization, and an entrypoint whose body takes no lock IS the finding; for every effect that must survive a fault (a write that can fail, a connection that can drop, a queue drained then re-sent), quote what preserves it — anything cleared before its write is confirmed IS the finding; for every per-session/per-scope state, quote the scope argument at the fan-out/broadcast call site — a nil or missing scope filter IS the finding; for every wake/notify predicate deciding WHO gets woken or re-rendered, quote the condition and check it can actually be false (an always-true predicate IS the finding) and that its reads are under the same lock as its writes; plus lost updates, lifecycle races, and error paths that swallow. Their FACTS name suspects; you read the decisive lines yourself and rule. Comments lie; only quoted code counts. (3) READ SURGICALLY, ONCE: read the few files you will edit yourself, one time; never re-read what you already hold; never re-verify what an explorer verified. (4) If you must run a command yourself, bound it: append '2>&1 | tail -n 20'. (5) BUILD YOURSELF: you design and write all code and tests directly — tests first for behavior you change or fix; then ONE explorer rerun of the decisive tests proves it (under -race for any concurrency claim — the race detector works in this environment), not repeated personal runs. (6) FIX EVERYTHING IN-MANDATE: under a fix-at-root mandate, a defect you have confirmed is FIXED test-first before you close — never merely disclosed. RISKS is for what you could not confirm or what is genuinely out of mandate, each with its reason; a confirmed in-mandate defect left as a disclosure is a failed run. (7) VERIFY CLAIMS BEFORE CLOSE: every serialization/isolation/fault-safety property your fixes or tests RELY on must be verified against quoted code, not comments or declarations; and for each test you wrote, name the code change that would make it fail — a test you cannot articulate a failure for is vacuous and proves nothing. (8) CLOSE: one explorer run of the full suite + go vet, then report. This is a headless run with no user available — never call AskUserQuestion; make the call, record it under ASSUMED. Spend your turns hunting and fixing, never re-verifying; aim to finish within ~35 of your own turns.")
-    RUN_PROMPT="$PROMPT$FULL_RISKS"
-  elif [[ "$ARM" == "nullius-rev1" ]]; then
-    # Slim ablation of nullius (benchmark 9): same methodology, three levers
-    # aimed at the measured residual cost — leader cache re-reads scale as
-    # resident_context x turns. (a) trimmed prompt (~45% fewer methodology
-    # tokens resident every turn); (b) fan-in hunt: ONE batch of <=3
-    # explorers with <=25-line reports instead of an open-ended hunter
-    # fleet; (c) ranged reads + hard turn-batching pressure (~20 turns) and
-    # a BACKGROUNDED closing scout overlapped with report drafting.
-    mkdir -p "$WT/.claude/agents"
-    cp "$ROOT_DIR/.claude/agents/nullius-explorer.md" "$WT/.claude/agents/"
-    CLAUDE_ARGS+=(--model "$LEAN_MODEL" --effort "$LEAN_EFFORT")
-    CLAUDE_ARGS+=(--append-system-prompt "You are a senior engineer working this task HANDS-ON. Your context window is the bill: every token that enters it is re-paid on every later turn, and every TURN re-pays the whole context — so batch aggressively and finish in few turns (aim under ~20 of your own turns). The diet governs CONTEXT, never scope: you do ALL the work the task demands, cheaply. Rules, non-negotiable: (1) DELEGATE BULK: never run builds, tests, linters, or broad searches yourself — dispatch nullius-explorer subagents (Agent tool; cheap throwaway contexts) for every such job; their capped reports are your trusted record. (2) HUNT ONCE, WIDE: discovery is ONE parallel batch of AT MOST 3 explorers in your first turn, together sweeping every corner of the mandate. The standing question for every sweep: for each property the code RELIES on to be correct, quote the mechanism that enforces it — a comment, a name, a field, or a sibling function that enforces it elsewhere is NOT a mechanism, and a relied-on property with no quotable enforcement IS the finding. Apply it to whatever invariants the mandate's code actually has, e.g.: exclusive access to shared mutable state (quote the guard inside the mutating entrypoint's OWN body); effects that must survive a fault or retry (quote what preserves or replays them — anything discarded before its effect is confirmed IS the finding); data confined to a scope, tenant, session, or permission (quote the filter at the crossing point); resources that must be released or bounded (quote the release on EVERY path, including error paths); conditions deciding who is woken, retried, rendered, or skipped (quote the condition and check it can actually take both values); boundaries and edges (empty, zero, max, duplicate, concurrent, out-of-order); and error paths that swallow, mask, or half-apply. Cap each explorer's report at 25 lines: suspects as file:line plus the decisive quoted lines, zero narration. Comments lie; only quoted code counts — you read the decisive lines yourself and rule. (3) READ RANGED, ONCE: read only files you will edit, only ONCE, and only the decisive line ranges (use offset/limit) — never a whole file over ~150 lines, never re-read what you hold, never re-verify what an explorer verified. (4) Own commands bounded: append '2>&1 | tail -n 20'. (5) BUILD YOURSELF, BATCHED: design and write all code and tests directly — tests first for behavior you change; group independent edits into the SAME turn; then ONE explorer rerun of the decisive tests proves the whole batch (under the toolchain's race/sanitizer flags for any concurrency claim, when available), not per-edit runs. (6) FIX EVERYTHING IN-MANDATE: a defect you have confirmed is FIXED test-first before you close — never merely disclosed; RISKS is only for what you could not confirm or what is out of mandate, each with its reason. (7) VERIFY BEFORE CLOSE: every invariant your fixes or tests rely on must be backed by quoted code, not comments; for each test you wrote, name the code change that would make it fail. (8) CLOSE OVERLAPPED: immediately after your final edit, dispatch ONE explorer to run the full suite plus the project's static checks with run_in_background: true, draft your report while it runs, and finalize only with its verbatim output as the record — never self-reported green. This is a headless run with no user: never call AskUserQuestion; make the call and record it under ASSUMED.")
-    RUN_PROMPT="$PROMPT$FULL_RISKS"
-  elif [[ "$ARM" == "nullius-rev2" ]]; then
-    # rev2 = rev1 + fan-in hunt: hunters are UNCAPPED in number (6-10
-    # orthogonal sweeps) because their reports never enter the leader's
-    # context — each writes full findings to /tmp/nullius-findings/ and
-    # returns a one-line receipt; a sink explorer merges them into a
-    # deduplicated INDEX (mechanical, no ranking — judgment never
-    # delegates downtier); the leader ranged-reads only the decisive
-    # findings entries. Trades one serial hop of walltime for recall at
-    # near-constant leader residency. Findings live outside the worktree
-    # so the scored diff stays clean.
-    mkdir -p "$WT/.claude/agents"
-    cp "$ROOT_DIR/.claude/agents/nullius-explorer.md" "$WT/.claude/agents/"
-    cp "$ROOT_DIR/.claude/agents/nullius-hunter.md" "$WT/.claude/agents/"
-    # Host mode shares /tmp across reps; stale findings from a prior rep
-    # would contaminate the sink. Container mode gets a fresh /tmp anyway.
-    rm -rf /tmp/nullius-findings
-    CLAUDE_ARGS+=(--model "$LEAN_MODEL" --effort "$LEAN_EFFORT")
-    CLAUDE_ARGS+=(--append-system-prompt "You are a senior engineer working this task HANDS-ON. Your context window is the bill: every token that enters it is re-paid on every later turn, and every TURN re-pays the whole context — so batch aggressively and finish in few turns (aim under ~20 of your own turns). The diet governs CONTEXT, never scope: you do ALL the work the task demands, cheaply. Rules, non-negotiable: (1) DELEGATE BULK: never run builds, tests, linters, or broad searches yourself — dispatch nullius-explorer subagents (Agent tool; cheap throwaway contexts) for every such job; their capped reports are your trusted record. (2) HUNT ONCE, WIDE, FAN-IN: discovery is ONE parallel batch of 6-10 nullius-hunter subagents in your first turn, each assigned ONE orthogonal slice of the mandate (by subsystem, by entrypoint family, by invariant class — cover EVERY corner). Give each hunter the standing question: for each property the slice's code RELIES on to be correct, quote the mechanism that enforces it — a comment, a name, a field, or a sibling function that enforces it elsewhere is NOT a mechanism, and a relied-on property with no quotable enforcement IS the finding; sweep exclusive access to shared mutable state, effects that must survive a fault or retry, data confined to a scope/tenant/session, resources that must be released on EVERY path, conditions deciding who is woken/retried/rendered/skipped (can they take both values?), boundaries and edges (empty, zero, max, duplicate, concurrent, out-of-order), and error paths that swallow, mask, or half-apply. Each hunter writes its FULL findings to its own file under /tmp/nullius-findings/ and returns a one-line receipt. When all receipts are in, dispatch ONE nullius-explorer as SINK to read every file in /tmp/nullius-findings/ and return a deduplicated INDEX, ≤40 lines, one line per unique suspect: file:line — relied-on property — findings file holding the quote. The sink merges and dedupes ONLY — no ranking, no filtering, no verdicts; judgment is yours alone. You then Read the decisive findings entries (ranged) and the decisive source lines yourself, and rule. Comments lie; only quoted code counts. (3) READ RANGED, ONCE: read only files you will edit (plus findings entries the index flags), only ONCE, and only the decisive line ranges (use offset/limit) — never a whole source file over ~150 lines, never re-read what you hold, never re-verify what a scout verified. (4) Own commands bounded: append '2>&1 | tail -n 20'. (5) BUILD YOURSELF, BATCHED: design and write all code and tests directly — tests first for behavior you change; group independent edits into the SAME turn; then ONE explorer rerun of the decisive tests proves the whole batch (under the toolchain's race/sanitizer flags for any concurrency claim, when available), not per-edit runs. (6) FIX EVERYTHING IN-MANDATE: a defect you have confirmed is FIXED test-first before you close — never merely disclosed; RISKS is only for what you could not confirm or what is out of mandate, each with its reason. (7) VERIFY BEFORE CLOSE: every invariant your fixes or tests rely on must be backed by quoted code, not comments; for each test you wrote, name the code change that would make it fail. (8) CLOSE OVERLAPPED: immediately after your final edit, dispatch ONE explorer to run the full suite plus the project's static checks with run_in_background: true, draft your report while it runs, and finalize only with its verbatim output as the record — never self-reported green. This is a headless run with no user: never call AskUserQuestion; make the call and record it under ASSUMED.")
-    RUN_PROMPT="$PROMPT$FULL_RISKS"
+  # REMOVED ARMS: fable-lean, nullius, nullius-rev1, nullius-rev2 (the
+  # fable-lean block and the rev2 fan-in block both lived here). They copied
+  # .claude/agents/nullius-explorer.md and
+  # nullius-hunter.md, both deleted in dfdf7af (salvaged into cc-nullius/), so
+  # they could no longer run. Restore the agents from the commit before that:
+  #   git show b7893a7:.claude/agents/nullius-explorer.md
+  #   git show b7893a7:.claude/agents/nullius-hunter.md
+  # The arm code itself is in this file at the commit preceding its deletion.
   elif [[ "$ARM" == "cc-nullius" ]]; then
     # The cc-nullius PLUGIN arm: same doctrine as nullius, but the diet is
     # MECHANIZED — a PreToolUse hook (diet governor) denies main-thread
@@ -263,22 +236,26 @@ $PROMPT"
     # is wired via --settings (project-settings hooks may be untrusted
     # headless). The skill body is force-injected like the other arms —
     # headless models ignore optional skills.
-    mkdir -p "$WT/.claude/hooks"
-    cp -r "$ROOT_DIR/cc-nullius/agents" "$WT/.claude/agents"
-    cp "$ROOT_DIR/cc-nullius/hooks/diet-governor.mjs" "$WT/.claude/hooks/"
-    cat > "$WT/.claude/nullius-settings.json" <<'EOF'
-{
-  "hooks": {
-    "PreToolUse": [
-      { "matcher": "Read|Grep|Glob|WebFetch|WebSearch|Bash|Edit|Write|Agent|Task|mcp__.*",
-        "hooks": [ { "type": "command",
-          "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/diet-governor.mjs\"" } ] }
-    ]
-  }
-}
-EOF
-    CLAUDE_ARGS+=(--model "$LEAN_MODEL" --effort "$LEAN_EFFORT" --settings ".claude/nullius-settings.json")
-    CC_SKILL_BODY="$(awk 'f{print} /^---[[:space:]]*$/{c++; if(c==2) f=1}' "$ROOT_DIR/cc-nullius/skills/nullius/SKILL.md")"
+    # NOTHING is hand-copied any more: the plugin install inside the container
+    # (see PLUGIN_MOUNT / nullius-entry below) supplies agents, hooks and the
+    # hooks.json wiring from one source of truth. Host (CONTAINER=0) reps still
+    # need the plugin installed in the ambient CLI.
+CLAUDE_ARGS+=(--model "$LEAN_MODEL" --effort "$LEAN_EFFORT")
+    # Resolve the doctrine skill from what EXISTS (the plugin's skill dirs have
+    # been renamed before): prefer `starve` — the session-start hook's entry
+    # point — else the sole skill, if there is exactly one. A missing or empty
+    # body is fatal: a doctrine-less cc-nullius rep silently invalidates the arm.
+    CC_SKILL_MD="$ROOT_DIR/cc-nullius/skills/starve/SKILL.md"
+    if [[ ! -r "$CC_SKILL_MD" ]]; then
+      CC_SKILL_CANDS=("$ROOT_DIR"/cc-nullius/skills/*/SKILL.md)
+      if [[ ${#CC_SKILL_CANDS[@]} -eq 1 && -r "${CC_SKILL_CANDS[0]}" ]]; then
+        CC_SKILL_MD="${CC_SKILL_CANDS[0]}"
+      else
+        echo "cc-nullius arm: doctrine SKILL.md not found (looked for $CC_SKILL_MD; candidates: ${CC_SKILL_CANDS[*]})" >&2; exit 3
+      fi
+    fi
+    CC_SKILL_BODY="$(awk 'f{print} /^---[[:space:]]*$/{c++; if(c==2) f=1}' "$CC_SKILL_MD")"
+    [[ -n "${CC_SKILL_BODY//[[:space:]]/}" ]] || { echo "cc-nullius arm: doctrine body empty in $CC_SKILL_MD — refusing to run a doctrine-less rep" >&2; exit 3; }
     CLAUDE_ARGS+=(--append-system-prompt "You are the nullius starved orchestrator; the doctrine below governs this run. A diet-governor hook denies context-fattening calls on your thread — by design: obey each denial's steering reason, never fight it. Headless run, no user: never call AskUserQuestion; self-answer and record under ASSUMED as 'self-answered: Q -> A'. Do not end before the close-out scout record (full suite + linters + exported-surface diff) has run and you have ruled on it. The doctrine:
 
 $CC_SKILL_BODY")
@@ -298,7 +275,7 @@ $CC_SKILL_BODY")
     [[ -n "$PLAIN_EFFORT" ]] && CLAUDE_ARGS+=(--effort "$PLAIN_EFFORT")
     RUN_PROMPT="$PROMPT$FULL_RISKS"
   else
-    echo "arm must be nullius|nullius-rev1|nullius-rev2|cc-nullius|fable-lean|byproxy|byproxy-noaudit|byproxy-nobuilder|plain|plain+report" >&2; exit 2
+    echo "arm must be cc-nullius|byproxy|byproxy-noaudit|byproxy-nobuilder|plain|plain+report" >&2; exit 2
   fi
 
   echo "[$TASK_NAME/$ARM rep $rep] running headless (timeout ${TIMEOUT_S}s)..." >&2
@@ -372,21 +349,75 @@ $CC_SKILL_BODY")
       export ANTHROPIC_API_KEY; AUTH_ENV=(-e ANTHROPIC_API_KEY)
     elif [[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]]; then
       export CLAUDE_CODE_OAUTH_TOKEN; AUTH_ENV=(-e CLAUDE_CODE_OAUTH_TOKEN)
+    elif [[ -n "${CRED_FILE:-}" ]]; then
+      AUTH_ENV=()   # no env credential: the copied login below is the auth
     else
-      echo "CONTAINER=1 requires a credential in the environment:" >&2
+      echo "CONTAINER=1 requires a credential in the environment (or CRED_FILE):" >&2
       echo "  API key (sk-ant-api03-): ANTHROPIC_API_KEY or NULLIUS_ANTHROPIC_API_KEY" >&2
       echo "  OAuth (claude setup-token): CLAUDE_CODE_OAUTH_TOKEN or NULLIUS_CLAUDE_CODE_OAUTH_TOKEN" >&2
+      echo "  existing host login: CRED_FILE=\$HOME/.claude/.credentials.json" >&2
       exit 3
     fi
     CHOME="$WTPARENT/chome"; mkdir -p "$CHOME"
+    # CRED_FILE: COPY the login into this rep's throwaway home, where the
+    # container's claude looks for it. Never bind-mounted — read-only would
+    # break OAuth refresh mid-run, writable would let the container rewrite
+    # your real credential store. The copy refreshes freely and dies with the
+    # worktree; only its path and size are ever mentioned.
+    if [[ -n "${CRED_FILE:-}" ]]; then
+      CRED_COPY="$CHOME/.claude/.credentials.json"
+      mkdir -p "$CHOME/.claude"
+      ( umask 077; cp "$CRED_FILE" "$CRED_COPY" )
+      chmod 600 "$CRED_COPY"
+      if [[ ${#AUTH_ENV[@]} -gt 0 ]]; then
+        echo "note: CRED_FILE copied to the rep home, but an env credential wins for this run (${AUTH_ENV[1]})" >&2
+      else
+        echo "note: authenticating from CRED_FILE ($CRED_FILE, $(wc -c < "$CRED_FILE") bytes), copied into the rep home" >&2
+      fi
+    fi
+    # Per-rep host dir for the container's TMPDIR, so files the run drops there
+    # (notably the diet-governor stats file) are readable by the capture below.
+    # Mounted under HOME rather than over /tmp: nothing in the image expects a
+    # pre-populated /home/agent/tmp, and --user uid:gid owns it like $CHOME.
+    CTMP="$WTPARENT/ctmp"; mkdir -p "$CTMP"
+    # cc-nullius runs the REAL PLUGIN: `claude plugin install` from the
+    # bind-mounted working tree, instead of hand-copying agents/hooks and
+    # re-implementing hooks.json as a --settings file. Measured 2026-08-20: the
+    # hand-copied path shipped only diet-governor.mjs while it imports
+    # ./ledger-path.mjs (added in dfdf7af), so the hook died with
+    # ERR_MODULE_NOT_FOUND on EVERY call and every containerized rep ran
+    # ungoverned. Installing the plugin makes the benchmark test the artifact
+    # users actually install, and the install FAILS LOUDLY here.
+    PLUGIN_MOUNT=(); CONTAINER_ENTRY=""
+    if [[ "$ARM" == "cc-nullius" ]]; then
+      PLUGIN_MOUNT=(-v "$ROOT_DIR/cc-nullius:/plugin-src:ro")
+      CONTAINER_ENTRY="/usr/local/bin/nullius-entry"
+      cat > "$CHOME/nullius-entry" <<'ENTRY'
+#!/bin/sh
+# Install the plugin, then exec claude with the args the harness passed.
+set -e
+claude plugin marketplace add /plugin-src >/tmp/plug.log 2>&1 || {
+  echo "FATAL: plugin marketplace add failed" >&2; cat /tmp/plug.log >&2; exit 9; }
+claude plugin install nullius@nullius-local >>/tmp/plug.log 2>&1 || {
+  echo "FATAL: plugin install failed" >&2; cat /tmp/plug.log >&2; exit 9; }
+claude plugin list 2>/dev/null | grep -q "nullius@nullius-local" || {
+  echo "FATAL: plugin not listed after install" >&2; cat /tmp/plug.log >&2; exit 9; }
+exec claude "$@"
+ENTRY
+      chmod +x "$CHOME/nullius-entry"
+      PLUGIN_MOUNT+=(-v "$CHOME/nullius-entry:/usr/local/bin/nullius-entry:ro")
+    fi
     printf '%s' "$RUN_PROMPT" | timeout "$TIMEOUT_S" docker run --rm -i \
       --user "$(id -u):$(id -g)" \
       "${AUTH_ENV[@]}" -e HOME=/home/agent \
+      -e CLAUDE_PROJECT_DIR=/work \
       ${CLAUDE_CODE_AUTO_COMPACT_WINDOW:+-e CLAUDE_CODE_AUTO_COMPACT_WINDOW="$CLAUDE_CODE_AUTO_COMPACT_WINDOW"} \
       -e GOCACHE=/home/agent/.cache/go-build -e GOPATH=/home/agent/go \
       -v "$WT:/work" -w /work \
       -v "$CHOME:/home/agent" \
-      nullius-bench:latest claude "${CLAUDE_ARGS[@]}" \
+      -e TMPDIR=/home/agent/tmp -v "$CTMP:/home/agent/tmp" \
+      "${PLUGIN_MOUNT[@]}" \
+      nullius-bench:latest ${CONTAINER_ENTRY:-claude} "${CLAUDE_ARGS[@]}" \
       > "$RAW" 2>"$RAW.stderr"
   else
     (cd "$WT" && printf '%s' "$RUN_PROMPT" | timeout "$TIMEOUT_S" claude "${CLAUDE_ARGS[@]}") > "$RAW" 2>"$RAW.stderr"
@@ -528,6 +559,58 @@ $CC_SKILL_BODY")
     fi
   fi
 
+  # cc-nullius arm: the diet-governor hook keeps its own best-effort telemetry
+  # (denies/rewrites/dispatch counts) at $TMPDIR/nullius-stats-<session_id>
+  # (diet-governor.mjs: statsFile), keyed by the CLI's own session_id, which
+  # RESULT_OBJ carries. Host mode shares the same $TMPDIR as this script;
+  # CONTAINER=1 points the container's TMPDIR at the $CTMP bind mount above, so
+  # the file lands on the host either way. Telemetry only — never abort the rep
+  # over it.
+  GOVERNOR_STATS='null'
+  if [[ "$ARM" == "cc-nullius" ]]; then
+    CC_SESSION="$(jq -r '.session_id // empty' <<<"$RESULT_OBJ" 2>/dev/null || true)"
+    if [[ -n "$CC_SESSION" ]]; then
+      if [[ "${CONTAINER:-0}" == "1" ]]; then
+        CC_STATS_DIR="${CTMP:-${TMPDIR:-/tmp}}"
+      else
+        CC_STATS_DIR="${TMPDIR:-/tmp}"
+      fi
+      CC_STATS_FILE="$CC_STATS_DIR/nullius-stats-$CC_SESSION"
+      if [[ -r "$CC_STATS_FILE" ]]; then
+        GOVERNOR_STATS="$(cat "$CC_STATS_FILE" 2>/dev/null || echo null)"
+        jq -e . >/dev/null 2>&1 <<<"$GOVERNOR_STATS" || { GOVERNOR_STATS='null'; echo "warn: cc-nullius governor stats file malformed ($CC_STATS_FILE)" >&2; }
+      else
+        # The hook names the stats file from its own hook-payload session_id,
+        # which is not guaranteed to equal the CLI result's session_id — the
+        # two diverge in practice. Fall back to any nullius-stats-* file(s) in
+        # the same dir before giving up.
+        CC_STATS_GLOB=("$CC_STATS_DIR"/nullius-stats-*)
+        if [[ -e "${CC_STATS_GLOB[0]}" ]]; then
+          if [[ "${#CC_STATS_GLOB[@]}" -eq 1 ]]; then
+            GOVERNOR_STATS="$(cat "${CC_STATS_GLOB[0]}" 2>/dev/null || echo null)"
+            jq -e . >/dev/null 2>&1 <<<"$GOVERNOR_STATS" \
+              || { GOVERNOR_STATS='null'; echo "warn: cc-nullius governor stats file malformed (${CC_STATS_GLOB[0]})" >&2; }
+            [[ "$GOVERNOR_STATS" != null ]] \
+              && echo "note: governor stats found under a different session id ($(basename "${CC_STATS_GLOB[0]}"))" >&2
+          else
+            GOVERNOR_STATS="$(jq -s -e 'reduce .[] as $f ({}; reduce ($f|keys[]) as $k (.;
+                   .[$k] = (if ($f[$k]|type) == "number" then ((.[$k] // 0) + $f[$k]) else $f[$k] end)))' \
+              "${CC_STATS_GLOB[@]}" 2>/dev/null || echo null)"
+            if [[ "$GOVERNOR_STATS" == null ]]; then
+              echo "warn: cc-nullius governor stats files malformed (${CC_STATS_GLOB[*]})" >&2
+            else
+              echo "note: merged ${#CC_STATS_GLOB[@]} governor stats files" >&2
+            fi
+          fi
+        else
+          echo "warn: cc-nullius governor stats file missing ($CC_STATS_FILE) — telemetry unrecorded" >&2
+        fi
+      fi
+    else
+      echo "warn: cc-nullius session_id not found in result — governor stats unrecorded" >&2
+    fi
+  fi
+
   jq -n -c \
     --arg task "$TASK_NAME" --arg arm "$LABEL" --arg stamp "$STAMP" \
     --argjson rep "$rep" --argjson rc "$RC" --argjson wall "$WALL" \
@@ -542,6 +625,7 @@ $CC_SKILL_BODY")
     --argjson craftsmen "${CRAFTSMAN_N:-0}" --argjson ccjudges "${CCJUDGE_N:-0}" \
     --argjson skillinv "${SKILL_N:-0}" \
     --argjson blind "$BLIND" \
+    --argjson governorstats "$GOVERNOR_STATS" \
     --argjson compactions "${COMPACTIONS:-0}" \
     --arg compactwin "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" \
     --arg raw "$(basename "$RAW")" \
@@ -553,7 +637,7 @@ $CC_SKILL_BODY")
       critic_dispatches:$critics, builder_dispatches:$builders,
       auditor_dispatches:$auditors,
       craftsman_dispatches:$craftsmen, judge_dispatches:$ccjudges,
-      score:$score, blind_disclosure:$blind,
+      score:$score, blind_disclosure:$blind, governor_stats:$governorstats,
       compactions:$compactions, compact_window:(if $compactwin == "" then null else ($compactwin|(tonumber? // null)) end),
       diffstat:$diffstat, new_files:$untracked, raw:$raw}' \
     | tee -a "$JSONL"

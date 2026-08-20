@@ -1,0 +1,181 @@
+{
+  "task": "stats-rolling",
+  "generated_from": "montanaflynn/stats @ 5badb5ad8b66438233feac0d78ec8a2e6d62e34e (MIT), vendored into skeleton/; 6 defects injected on the paths a windowed-statistics feature crosses",
+  "hidden_suite": {
+    "package": "stats",
+    "location": "hidden/ (copied into the module root by score.sh, removed after)",
+    "run_with": "plain go test (single-threaded numeric code; no -race requirement)",
+    "note": "Each defect below turns its catcher red on the seeded tree and green once the defect is repaired. The package's own pre-existing suite is green on the seeded tree — these defects are silent to it."
+  },
+  "defects": [
+    {
+      "id": "window-aliasing",
+      "file": "rolling.go",
+      "line": 26,
+      "symbol": "MovingAverage",
+      "summary": "Rolling means over a long series (roughly five hundred points or more) come back correct the first time and wrong every time after that, because computing them destroys the caller's own data: the input slice is left holding a running cumulative total instead of the original readings. Shorter series behave fine, so the fault only shows up at scale or when the same slice is reused for a second statistic.",
+      "class": "aliasing/caller-slice-mutation",
+      "todo_impact": "A user who computes a rolling average over a long series and then computes anything else from the same slice (a second window, a mean, a plot) gets nonsense — their input has been silently overwritten with ever-growing running totals, and a repeated call returns different, wildly inflated numbers.",
+      "catchers": [
+        "TestDefectWindowAliasing"
+      ],
+      "detect_keywords": [
+        "MovingAverage",
+        "mutates the input",
+        "modifies the caller's slice",
+        "input is overwritten",
+        "destroys the input",
+        "cumulative sum",
+        "prefix sum",
+        "running total",
+        "fast path",
+        "512",
+        "in-place",
+        "not a copy",
+        "second call differs",
+        "non-idempotent",
+        "aliasing"
+      ]
+    },
+    {
+      "id": "copyslice-cap-not-len",
+      "file": "util.go",
+      "line": 28,
+      "symbol": "sortedInput",
+      "summary": "Percentiles are badly wrong for any slice whose length is smaller than its capacity — for example a slice built with append into a preallocated buffer, or one produced by re-slicing. Extra zero values get mixed into the data before it is sorted, dragging every rank down; a percentile that should be 30 can come back as 0. A slice whose length equals its capacity gives correct answers, which makes the fault look intermittent.",
+      "class": "sizing/cap-instead-of-len",
+      "todo_impact": "Percentile figures computed over slices that came from append or a re-slice are silently polluted with phantom zero samples, so low and mid percentiles collapse toward zero while the same data copied into an exact-sized slice reports correctly.",
+      "catchers": [
+        "TestDefectCopySliceLength"
+      ],
+      "detect_keywords": [
+        "Percentile",
+        "sortedInput",
+        "cap(input)",
+        "capacity instead of length",
+        "cap vs len",
+        "extra zeros",
+        "zero-padded",
+        "phantom zeros",
+        "spare capacity",
+        "append",
+        "reslice",
+        "len < cap",
+        "wrong percentile"
+      ]
+    },
+    {
+      "id": "percentile-rank-boundary",
+      "file": "percentile.go",
+      "line": 41,
+      "symbol": "Percentile",
+      "summary": "Low percentiles of an even-length dataset are slightly off — a query that should return 13 returns 14, for instance — while the same query on an odd-length dataset, and mid/high percentiles generally, are right. The discrepancy is confined to the bottom of the distribution and only appears when the sample count is even, so it reads as a rounding quirk rather than a bug.",
+      "class": "arith/off-by-one-rank-divisor",
+      "todo_impact": "Low-end percentile reports (p1, p5, p10) disagree with reference tools like NumPy or Excel by one interpolation step whenever the sample count happens to be even, so a threshold derived from the bottom tail is quietly set at the wrong value.",
+      "catchers": [
+        "TestDefectPercentileRankBoundary"
+      ],
+      "detect_keywords": [
+        "Percentile",
+        "off-by-one",
+        "off by one",
+        "rank",
+        "interpolation",
+        "even length",
+        "odd length",
+        "low percentile",
+        "p1",
+        "p5",
+        "p10",
+        "n-1",
+        "n vs n-1",
+        "lower tail",
+        "disagrees with numpy"
+      ]
+    },
+    {
+      "id": "variance-onepass",
+      "file": "sem.go",
+      "line": 23,
+      "symbol": "SEM",
+      "summary": "Standard error of the mean returns exactly 0 for data that plainly varies, whenever the values sit on a large offset (timestamps, prices around a big base, sensor counts in the millions). The spread is real and other spread statistics on the same data report it, but SEM collapses to zero because the magnitude of the values swamps the tiny differences between them.",
+      "class": "arith/catastrophic-cancellation",
+      "todo_impact": "Error bars and confidence intervals derived from SEM vanish for any large-magnitude series — the user is told the mean is known exactly when it is not, while shifting the same data toward zero suddenly makes SEM correct again.",
+      "catchers": [
+        "TestDefectVarianceStability"
+      ],
+      "detect_keywords": [
+        "SEM",
+        "standard error",
+        "returns 0",
+        "zero standard error",
+        "catastrophic cancellation",
+        "cancellation",
+        "numerical stability",
+        "numerically unstable",
+        "sum of squares",
+        "sumsq",
+        "one-pass",
+        "two-pass",
+        "Welford",
+        "large offset",
+        "precision loss"
+      ]
+    },
+    {
+      "id": "diff-len-underflow",
+      "file": "diff.go",
+      "line": 9,
+      "symbol": "Diff",
+      "summary": "The successive-differences call fails to reject an empty series when that empty slice still has spare room in it (for example one made with make(..., 0, 8) or emptied by re-slicing). Instead of the documented empty-input error the caller gets an empty result and a nil error, so an empty dataset looks like a successful computation. A plain nil or exactly-sized empty slice is rejected correctly, which hides the inconsistency.",
+      "class": "guard/cap-vs-len",
+      "todo_impact": "An empty series silently passes through a differencing step as a success with no rows, so downstream code carries on with nothing instead of surfacing the documented empty-input error — and whether the error appears depends on how the caller happened to build the slice.",
+      "catchers": [
+        "TestDefectDiffEmptyInput"
+      ],
+      "detect_keywords": [
+        "Diff",
+        "ErrEmptyInput",
+        "empty input",
+        "nil error",
+        "no error returned",
+        "cap(input)",
+        "capacity instead of length",
+        "cap vs len",
+        "spare capacity",
+        "make(, 0, ",
+        "guard",
+        "inconsistent empty handling"
+      ]
+    },
+    {
+      "id": "err-swallowed-chain",
+      "file": "quartile.go",
+      "line": 36,
+      "symbol": "Quartile",
+      "summary": "Quartiles of a single-element dataset come back as all zeros with no error reported, and the interquartile range of the same data is 0 with no error. The failure of the inner median computation is never surfaced, so the caller cannot distinguish 'could not compute' from 'the quartiles really are zero'.",
+      "class": "errors/shadowed-err-swallowed",
+      "todo_impact": "A degenerate or one-sample series yields a plausible-looking Q1/Q2/Q3 of 0,0,0 and an IQR of 0 with a nil error, so outlier detection and box plots built on it silently treat garbage as valid data instead of reporting the failure.",
+      "catchers": [
+        "TestDefectErrorPropagation"
+      ],
+      "detect_keywords": [
+        "Quartile",
+        "Quartiles",
+        "InterQuartileRange",
+        "IQR",
+        "shadow",
+        "shadowed",
+        "swallowed error",
+        "error not propagated",
+        "nil error",
+        "returns zero values",
+        "single element",
+        "one-element input",
+        ":= instead of =",
+        "named return"
+      ]
+    }
+  ],
+  "reconciled": "RECONCILED against the injected skeleton/ on 2026-08-19: file/symbol/line below are verified by reading the named line in skeleton/, not predictions. The authoritative ground truth for scoring remains `catchers` (hidden tests)."
+}

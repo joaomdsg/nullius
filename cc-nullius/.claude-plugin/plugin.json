@@ -1,7 +1,7 @@
 {
   "name": "nullius",
   "displayName": "nullius",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Starved-orchestrator lean methodology: the main thread pays only for judgment. Bulk absorption, lens hunts, builds and verification run in cheap subagent contexts; a diet governor denies context-fattening tool calls on the main thread.",
   "author": { "name": "Joao Goncalves" },
   "license": "MIT",

@@ -1,0 +1,11 @@
+# Visible definition of done for stats-rolling (the acceptance floor the
+# agent is told about in prompt.md). Not a test-name list like vialite-todo's:
+# this task's floor is a feature spec, so the scorer checks it structurally.
+RollingMedian exists with signature (Float64Data, int) ([]float64, error)
+RollingStdDev exists with signature (Float64Data, int) ([]float64, error)
+RollingPercentile exists with signature (Float64Data, int, float64) ([]float64, error)
+Window type exists and is shared by the three rolling functions
+Each new exported symbol carries a godoc comment
+New tests exist for the new code (window-size and empty-input boundaries)
+go test ./... green (the pre-existing suite must not regress)
+go vet ./... clean

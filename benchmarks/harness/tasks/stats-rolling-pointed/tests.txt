@@ -1,0 +1,10 @@
+# Hidden catcher tests for stats-rolling. These live in hidden/ (package
+# stats, dropped into the module root by score.sh) and are NEVER copied into
+# the rep's worktree by the runner — the agent never sees them. One Go test
+# name per line; the scorer runs each with an exact `-run '^Name$'` anchor.
+TestDefectWindowAliasing
+TestDefectCopySliceLength
+TestDefectPercentileRankBoundary
+TestDefectVarianceStability
+TestDefectDiffEmptyInput
+TestDefectErrorPropagation

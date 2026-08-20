@@ -42,6 +42,18 @@ cat > "$SANDBOX/bin/docker" <<'EOF'
 printf '%s\n' "$@" > "$DOCKER_ARGS_FILE"
 [[ -n "${ANTHROPIC_API_KEY+x}" ]] && echo APIKEY_IN_ENV >> "$DOCKER_ARGS_FILE"
 [[ -n "${CLAUDE_CODE_OAUTH_TOKEN+x}" ]] && echo OAUTH_IN_ENV >> "$DOCKER_ARGS_FILE"
+# Record the per-rep home mount and whether a credential COPY landed in it —
+# by path and mode only; the shim never reads the file's contents.
+for a in "$@"; do
+  if [[ "$a" == *:/home/agent ]]; then
+    h="${a%:/home/agent}"
+    echo "CHOME_MOUNT" >> "$DOCKER_ARGS_FILE"
+    if [[ -f "$h/.claude/.credentials.json" ]]; then
+      echo "CRED_COPY_PRESENT" >> "$DOCKER_ARGS_FILE"
+      echo "CRED_COPY_MODE=$(stat -c '%a' "$h/.claude/.credentials.json")" >> "$DOCKER_ARGS_FILE"
+    fi
+  fi
+done
 cat > /dev/null
 echo '{"type":"result","result":"ok","total_cost_usd":0}'
 EOF
@@ -76,7 +88,7 @@ run_case() {
   local rc=0
   env -u ANTHROPIC_API_KEY -u NULLIUS_ANTHROPIC_API_KEY -u BYPROXY_ANTHROPIC_API_KEY \
       -u CLAUDE_CODE_OAUTH_TOKEN -u NULLIUS_CLAUDE_CODE_OAUTH_TOKEN \
-      -u NULLIUS_CLAUDE_CODE_OAUTH_TOKEN_FILE \
+      -u NULLIUS_CLAUDE_CODE_OAUTH_TOKEN_FILE -u CRED_FILE \
       PATH="$SANDBOX/bin:$PATH" DOCKER_ARGS_FILE="$args_file" CONTAINER=1 "$@" \
       bash "$SANDBOX/harness/run.sh" "$TASK" plain \
       >"$SANDBOX/out-$name" 2>"$SANDBOX/err-$name" || rc=$?
@@ -186,6 +198,59 @@ if run_case none 3; then
   fi
 fi
 
+## ---- CRED_FILE: host OAuth login copied into the throwaway home -----------
+# Fixture only: a DUMMY credentials JSON in the sandbox, never the real one.
+echo '{"claudeAiOauth":{"accessToken":"fake"}}' > "$SANDBOX/cred.json"
+: > "$SANDBOX/cred-empty.json"
+
+# N. CRED_FILE + CONTAINER=1 → a mode-600 copy lands in $CHOME/.claude/, and
+# the docker argv still mounts $CHOME.
+if run_case credfile 0 CRED_FILE="$SANDBOX/cred.json"; then
+  assert_marks "$SANDBOX/args-credfile" credfile CHOME_MOUNT - \
+    && assert_marks "$SANDBOX/args-credfile" credfile CRED_COPY_PRESENT - \
+    && assert_marks "$SANDBOX/args-credfile" credfile CRED_COPY_MODE=600 - \
+    && ok credfile
+fi
+
+# O. CRED_FILE with NO env credential → the run proceeds (AUTH_ENV empty), so
+# neither credential var is passed into the container.
+if run_case credfile-noenv 0 CRED_FILE="$SANDBOX/cred.json"; then
+  assert_marks "$SANDBOX/args-credfile-noenv" credfile-noenv - ANTHROPIC_API_KEY \
+    && assert_marks "$SANDBOX/args-credfile-noenv" credfile-noenv - CLAUDE_CODE_OAUTH_TOKEN \
+    && ok credfile-noenv
+fi
+
+# P. CRED_FILE + env credential → env wins, and one line says so.
+if run_case credfile-both 0 CRED_FILE="$SANDBOX/cred.json" ANTHROPIC_API_KEY=sk-ant-api03-fake; then
+  assert_marks "$SANDBOX/args-credfile-both" credfile-both ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN \
+    && { grep -q 'env credential wins' "$SANDBOX/err-credfile-both" \
+         || { echo "FAIL credfile-both: no 'env credential wins' log line"; FAIL=$((FAIL+1)); false; }; } \
+    && ok credfile-both
+fi
+
+# Q. CRED_FILE pointing at a missing file → fail fast, docker never invoked.
+if run_case credfile-missing 3 CRED_FILE="$SANDBOX/no-such-cred.json"; then
+  if [[ -s "$SANDBOX/args-credfile-missing" ]]; then
+    echo "FAIL credfile-missing: docker was invoked despite a missing CRED_FILE"; FAIL=$((FAIL+1))
+  else
+    ok credfile-missing
+  fi
+fi
+
+# Q2. CRED_FILE pointing at an EMPTY file → fail fast.
+if run_case credfile-empty 3 CRED_FILE="$SANDBOX/cred-empty.json"; then
+  if [[ -s "$SANDBOX/args-credfile-empty" ]]; then
+    echo "FAIL credfile-empty: docker was invoked despite an empty CRED_FILE"; FAIL=$((FAIL+1))
+  else
+    ok credfile-empty
+  fi
+fi
+
+# R. CRED_FILE with CONTAINER=0 is unsupported → fail fast.
+if run_case credfile-nocontainer 3 CRED_FILE="$SANDBOX/cred.json" CONTAINER=0; then
+  ok credfile-nocontainer
+fi
+
 ## ---- judge.sh credential handling ------------------------------------------
 
 # G. API key flows through to the judge's claude untouched.
@@ -218,6 +283,19 @@ if run_judge_case judge-none; then
     ok judge-none
   fi
 fi
+
+# N. Retired arms (fable-lean, nullius, nullius-rev1, nullius-rev2 — their agent files were
+# deleted, see the pointer comment in run.sh) must be REJECTED, not run.
+for retired in fable-lean nullius nullius-rev1 nullius-rev2; do
+  rc=0
+  out="$(PATH="$SANDBOX/bin:$PATH" bash "$SANDBOX/harness/run.sh" "$TASK" "$retired" 2>&1)" || rc=$?
+  if [[ "$rc" -eq 2 && "$out" == *"arm must be"* ]]; then
+    ok "retired-arm-$retired"
+  else
+    echo "FAIL retired-arm-$retired: exit $rc (want 2), out: $(printf '%s' "$out" | tail -2 | tr '\n' ' ')"
+    FAIL=$((FAIL+1))
+  fi
+done
 
 echo "----"
 echo "auth-wiring: $PASS passed, $FAIL failed"

@@ -32,8 +32,12 @@ Seven arm names, six configs:
   fixes everything confirmed in-mandate before close. Confirmed n=4:
   quality ≥ plain fable every rep, race-clean, 0 regressions, at 36% of
   the dearest baseline rep (~half the honest n=2 baseline mean).
-- `fable-lean` — the same arm under its pre-rename label, kept so the
-  benchmark-7 reproduce commands work verbatim.
+- `fable-lean` — RETIRED. It copied `.claude/agents/nullius-explorer.md`,
+  deleted in dfdf7af, so the arm could no longer run; removed alongside
+  `nullius`/`nullius-rev1`/`nullius-rev2`. Its measured record stands in
+  benchmark 7; to reproduce, restore the agents with
+  `git show b7893a7:.claude/agents/nullius-explorer.md` and take the arm
+  code from run.sh at the commit preceding this one.
 - `plain` — plain Claude Code, no nullius/byproxy skills or agents, no
   global config (**not** "no subagents"; the native subagent scaffold is
   still there). Gets a minimal symmetric disclosure ask so `caught` is
