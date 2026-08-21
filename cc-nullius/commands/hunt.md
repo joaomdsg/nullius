@@ -59,7 +59,7 @@ hunter dispatches, and the gap questions last.
 
 5. Merge the verdicts into a checklist — ABSENT (quoted, mechanically
    certain) first, then decidable AMBIGUOUS. Cap at 40; note overflow
-   explicitly. Record it with the todo tools, and recite `turn N/25`.
+   explicitly. Record it with the todo tools and restate the open items.
 
 6. Rule the WHOLE checklist in ONE turn: read the decisive lines yourself
    (≤40 lines and one Read per item — if you need more, the hunter's quote

@@ -53,27 +53,13 @@ function tick(dir, session_id, id, { ctx = 40_000, tool = "Read" } = {}) {
   }, dir);
 }
 
-// ---- turn recitation -------------------------------------------------------
-
-test("early turns below the knee stay silent — no recitation before turn 15", () => {
-  const dir = sandbox(), s = sid();
-  for (let i = 1; i <= 14; i++) {
-    const { out } = tick(dir, s, `m${i}`);
-    assert.equal(out, null, `turn ${i} must not speak`);
-  }
-  rmSync(dir, { recursive: true, force: true });
-});
-
-test("turn 15 recites the turn budget", () => {
-  const dir = sandbox(), s = sid();
-  let out = null;
-  for (let i = 1; i <= 15; i++) out = tick(dir, s, `m${i}`).out;
-  assert.ok(out, "turn 15 must recite");
-  assert.equal(out.hookEventName, "PostToolUse");
-  assert.match(out.additionalContext, /turn 15\/25/, "names turn and target");
-  assert.ok(out.additionalContext.length < 700, "recitation stays lean");
-  rmSync(dir, { recursive: true, force: true });
-});
+// ---- turn identity ---------------------------------------------------------
+// What the turn channel DOES with these turns — churn density, repetition,
+// re-arming, telemetry — is pinned in turn-churn.test.mjs. The cumulative
+// 25-turn target and the consecutive-solo-streak detector that used to live
+// here are GONE (user ruling, 2026-08-21): a cap reads a long productive run
+// and a short wasteful one identically. What stays here is the turn-identity
+// rule every one of those signals is built on.
 
 test("multiple tool calls in ONE turn count as one turn", () => {
   const dir = sandbox(), s = sid();
@@ -97,43 +83,6 @@ test("no message id: turn channel stays silent (back-compat with older transcrip
     const { out } = runHook(SENTINEL, { cwd: dir, session_id: s, tool_name: "Read", transcript_path: p }, dir);
     assert.equal(out, null, "without a turn identity there is nothing to count");
   }
-  rmSync(dir, { recursive: true, force: true });
-});
-
-// ---- single-dispatch-turn nudge -------------------------------------------
-
-test("two consecutive one-dispatch turns earn a batching nudge", () => {
-  const dir = sandbox(), s = sid();
-  assert.equal(tick(dir, s, "m1", { tool: "Agent" }).out, null, "one solo turn is not a pattern");
-  assert.equal(tick(dir, s, "m2", { tool: "Agent" }).out, null, "the pattern is only visible at the boundary");
-  const { out } = tick(dir, s, "m3", { tool: "Agent" });
-  assert.ok(out, "two solo dispatch turns must be called out");
-  assert.match(out.additionalContext, /batch/i, "names the remedy");
-  assert.match(out.additionalContext, /dispatch/i, "names what was wasted");
-  rmSync(dir, { recursive: true, force: true });
-});
-
-// Caught live, 2026-08-18: the sentinel nudged a turn that had batched an Edit
-// with its dispatch, because hooks.json's PostToolUse matcher did not route
-// Edit/Write to the hook, so turn:calls never saw the edit. A turn that
-// dispatched AND edited is the batching we want, not a wasted pass.
-test("a turn that batched an edit with its dispatch is not a solo turn", () => {
-  const dir = sandbox(), s = sid();
-  for (const id of ["m1", "m2", "m3"]) {
-    tick(dir, s, id, { tool: "Agent" });
-    tick(dir, s, id, { tool: "Edit" });
-  }
-  const { out } = tick(dir, s, "m4", { tool: "Agent" });
-  assert.equal(out, null, "dispatch + edit in one turn is batching, not waste");
-  rmSync(dir, { recursive: true, force: true });
-});
-
-test("a turn that batched several dispatches breaks the solo streak", () => {
-  const dir = sandbox(), s = sid();
-  tick(dir, s, "m1", { tool: "Agent" });
-  // turn m2 dispatches three agents in one message
-  for (let i = 0; i < 3; i++) tick(dir, s, "m2", { tool: "Agent" });
-  assert.equal(tick(dir, s, "m3", { tool: "Agent" }).out, null, "batching is the behavior we want, not a finding");
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -202,25 +151,3 @@ test("a non-compact SessionStart leaves the read-dedup ledger alone", () => {
 
 // ---- nudge provenance ------------------------------------------------------
 
-// A bare turn:nudge count cannot be audited: it says two nudges fired, never
-// which turns they judged, so a false positive is only catchable by a human who
-// happens to be watching. One already shipped that way.
-test("a nudge records WHICH turn it judged, not just that it happened", () => {
-  const dir = sandbox(), s = sid();
-  for (const id of ["m1", "m2", "m3"]) tick(dir, s, id, { tool: "Agent" });
-  const stats = JSON.parse(readFileSync(join(dir, `nullius-stats-${s}`), "utf8"));
-  assert.equal(stats["turn:nudge"], 1, "one nudge fired");
-  assert.deepEqual(stats["turn:nudge:at"], [3], "and it names the turn it judged");
-  rmSync(dir, { recursive: true, force: true });
-});
-
-test("a turn that batched a todo update with its dispatch is not a solo turn", () => {
-  const dir = sandbox(), s = sid();
-  for (const id of ["m1", "m2", "m3"]) {
-    tick(dir, s, id, { tool: "Agent" });
-    tick(dir, s, id, { tool: "TodoWrite" });
-  }
-  assert.equal(tick(dir, s, "m4", { tool: "Agent" }).out, null,
-    "dispatch + todo update in one turn is batching, not waste");
-  rmSync(dir, { recursive: true, force: true });
-});

@@ -14,7 +14,11 @@ reports.
   DILUTES the attention your judgment runs on. Long contexts miss defects
   short ones catch. Starve for attention first, dollars second.
 - **Turns** — every turn re-pays a full pass over everything resident.
-  Cost ≈ turns × residency. **Target ≤25 of your own turns.**
+  Cost ≈ turns × residency. There is **no turn cap**: a long productive run
+  and a short wasteful one burn turns identically, so what is governed is how
+  each turn is SPENT. A turn that carried one lookup and nothing else is a
+  wasted pass; so is re-reading what you already hold. A churn hook watches
+  both over a sliding window and says so.
 
 The diet governs CONTEXT, never SCOPE. A governor hook enforces the floor
 mechanically; its denials ARE this doctrine — route around them on the
@@ -75,8 +79,9 @@ about to break a rule, never as preamble.
   is free — six dispatches in one message beat two in three messages.
 - **Never spend a turn** narrating, planning aloud, or reacting to a single
   result you could have batched with the next action.
-- **Recite `turn N/25`** whenever you update the todos. Recency is
-  attention; an unstated budget is an unenforced one.
+- **Never re-absorb.** A file you have read is resident; reading it again
+  costs the same as the first time and tells you nothing new. Rule from what
+  you hold, or send a scout for the narrow thing still missing.
 
 ## Loop
 
@@ -161,8 +166,8 @@ about to break a rule, never as preamble.
    with the same discipline — new code is not exempt, only younger.
 
 3. **Checklist, capped ~40**: quoted ABSENTs first, then decidable
-   AMBIGUOUS. Track with todos; restate the open items and `turn N/25`
-   whenever you update them.
+   AMBIGUOUS. Track with todos; restate the open items whenever you update
+   them — recency is attention.
 
 4. **Rule, then fix — you write it, in batches.** Rule the ENTIRE
    checklist in ONE turn from the hunter quotes plus at most one batched

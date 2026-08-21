@@ -256,6 +256,11 @@ CLAUDE_ARGS+=(--model "$LEAN_MODEL" --effort "$LEAN_EFFORT")
     fi
     CC_SKILL_BODY="$(awk 'f{print} /^---[[:space:]]*$/{c++; if(c==2) f=1}' "$CC_SKILL_MD")"
     [[ -n "${CC_SKILL_BODY//[[:space:]]/}" ]] || { echo "cc-nullius arm: doctrine body empty in $CC_SKILL_MD — refusing to run a doctrine-less rep" >&2; exit 3; }
+    # No turn-target retarget knob any more: the cumulative turn cap it
+    # existed to vary was DELETED from doctrine and hook alike after the
+    # noturnstarve arm showed removing it changed cost and turn count but not
+    # quality (mean fix 0.611 either way, n=3). The turn channel now watches
+    # churn density, which has no numeral to retarget.
     CLAUDE_ARGS+=(--append-system-prompt "You are the nullius starved orchestrator; the doctrine below governs this run. A diet-governor hook denies context-fattening calls on your thread — by design: obey each denial's steering reason, never fight it. Headless run, no user: never call AskUserQuestion; self-answer and record under ASSUMED as 'self-answered: Q -> A'. Do not end before the close-out scout record (full suite + linters + exported-surface diff) has run and you have ruled on it. The doctrine:
 
 $CC_SKILL_BODY")
@@ -415,7 +420,7 @@ ENTRY
       -e GOCACHE=/home/agent/.cache/go-build -e GOPATH=/home/agent/go \
       -v "$WT:/work" -w /work \
       -v "$CHOME:/home/agent" \
-      -e TMPDIR=/home/agent/tmp -v "$CTMP:/home/agent/tmp" \
+    -e TMPDIR=/home/agent/tmp -v "$CTMP:/home/agent/tmp" \
       "${PLUGIN_MOUNT[@]}" \
       nullius-bench:latest ${CONTAINER_ENTRY:-claude} "${CLAUDE_ARGS[@]}" \
       > "$RAW" 2>"$RAW.stderr"
@@ -611,6 +616,26 @@ ENTRY
     fi
   fi
 
+  # RESOLVED_ENV: the row describes the env it actually ran under. Reconstructing
+  # a bank's env by hand once put a claude-fable-5 leader against an all-opus-5
+  # comparison set, and nothing in the row said so — the rows had to be
+  # quarantined by label afterwards. A row that self-describes cannot lie twice.
+  RESOLVED_ENV="$(jq -n -c \
+    --arg arm "$ARM" --arg label "$LABEL" \
+    --arg orchm "$ORCH_MODEL" --arg orche "$ORCH_EFFORT" \
+    --arg leanm "$LEAN_MODEL" --arg leane "$LEAN_EFFORT" \
+    --arg plainm "$PLAIN_MODEL" --arg plaine "$PLAIN_EFFORT" \
+    --arg gom "$GO_MODEL" --arg goe "$GO_EFFORT" \
+    --arg container "${CONTAINER:-0}" --arg image "${IMAGE:-}" \
+    --arg bank "${BANK_NAME:-}" \
+    --arg auth "$(if [[ ${#AUTH_ENV[@]} -gt 0 ]]; then echo env; elif [[ -n "${CRED_FILE:-}" ]]; then echo cred_file; else echo inherited; fi)" \
+    '{arm:$arm, label:$label, container:($container=="1"), image:(if $image=="" then null else $image end),
+      auth_mode:$auth, bank:(if $bank=="" then null else $bank end),
+      leader:(if $arm=="cc-nullius" then {model:$leanm, effort:$leane}
+              elif ($arm|startswith("byproxy")) then {model:$orchm, effort:$orche}
+              elif $arm=="go-nullius" then {model:$gom, effort:$goe}
+              else {model:$plainm, effort:$plaine} end)}')"
+
   jq -n -c \
     --arg task "$TASK_NAME" --arg arm "$LABEL" --arg stamp "$STAMP" \
     --argjson rep "$rep" --argjson rc "$RC" --argjson wall "$WALL" \
@@ -626,6 +651,7 @@ ENTRY
     --argjson skillinv "${SKILL_N:-0}" \
     --argjson blind "$BLIND" \
     --argjson governorstats "$GOVERNOR_STATS" \
+    --argjson resolvedenv "$RESOLVED_ENV" \
     --argjson compactions "${COMPACTIONS:-0}" \
     --arg compactwin "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" \
     --arg raw "$(basename "$RAW")" \
@@ -638,6 +664,7 @@ ENTRY
       auditor_dispatches:$auditors,
       craftsman_dispatches:$craftsmen, judge_dispatches:$ccjudges,
       score:$score, blind_disclosure:$blind, governor_stats:$governorstats,
+      resolved_env:$resolvedenv,
       compactions:$compactions, compact_window:(if $compactwin == "" then null else ($compactwin|(tonumber? // null)) end),
       diffstat:$diffstat, new_files:$untracked, raw:$raw}' \
     | tee -a "$JSONL"
